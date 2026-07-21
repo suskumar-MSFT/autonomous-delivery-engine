@@ -1,7 +1,18 @@
-import { exec } from 'node:child_process';
+import { execFile as _execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 
-const execAsync = promisify(exec);
+const execFileAsync = promisify(_execFile);
+
+/** Must match owner/name — no shell metacharacters allowed. */
+const REPO_RE = /^[\w.-]+\/[\w.-]+$/;
+
+function validateRepo(repo: string): void {
+  if (!REPO_RE.test(repo)) {
+    throw new Error(
+      `Invalid repo "${repo}": expected "owner/name" format (letters, digits, hyphens, dots only)`,
+    );
+  }
+}
 
 export interface Issue {
   number: number;
@@ -11,10 +22,11 @@ export interface Issue {
 }
 
 /**
- * Shells out to `gh` CLI to list issues.
+ * Shells out to `gh` CLI (via execFile — no shell) to list issues.
  * Falls back to `gh api` if the primary command fails.
  */
 export async function listIssues(repo: string, state = 'open'): Promise<Issue[]> {
+  validateRepo(repo);
   try {
     return await listIssuesViaCli(repo, state);
   } catch (_primary) {
@@ -23,14 +35,27 @@ export async function listIssues(repo: string, state = 'open'): Promise<Issue[]>
 }
 
 export async function listIssuesViaCli(repo: string, state: string): Promise<Issue[]> {
-  const cmd = `gh issue list --repo ${repo} --state ${state} --json number,title,labels,state`;
-  const { stdout } = await execAsync(cmd);
+  validateRepo(repo);
+  // execFile — argv array, never a shell string → no command injection possible
+  const { stdout } = await execFileAsync('gh', [
+    'issue', 'list',
+    '--repo', repo,
+    '--state', state,
+    '--json', 'number,title,labels,state',
+  ]);
   return parseCliOutput(stdout);
 }
 
 export async function listIssuesFallback(repo: string, state: string): Promise<Issue[]> {
-  const cmd = `gh api repos/${repo}/issues?state=${state}&per_page=100`;
-  const { stdout } = await execAsync(cmd);
+  validateRepo(repo);
+  // execFile — argv array; `&` in repo/state values is inert, not a shell operator
+  const { stdout } = await execFileAsync('gh', [
+    'api',
+    `repos/${repo}/issues`,
+    '--method', 'GET',
+    '-f', `state=${state}`,
+    '-f', 'per_page=100',
+  ]);
   return parseFallbackOutput(stdout);
 }
 

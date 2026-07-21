@@ -54,7 +54,7 @@ describe('selectNextUnit', () => {
     expect(selectNextUnit(items)?.id).toBe('B');
   });
 
-  it('breaks ties by lexicographic id order', () => {
+  it('breaks ties by natural (numeric-aware) id order', () => {
     const items = [
       item({ id: 'M1-1' }),
       item({ id: 'M0-2' }),
@@ -63,7 +63,27 @@ describe('selectNextUnit', () => {
     expect(selectNextUnit(items)?.id).toBe('M0-1');
   });
 
-  it('returns lexicographically first id among ties', () => {
+  it('sorts M0-2 before M0-10 (natural sort, not lexicographic)', () => {
+    // Lexicographic: "M0-10" < "M0-2" because "1" < "2"
+    // Natural sort:  "M0-2"  < "M0-10" because 2 < 10
+    const items = [
+      item({ id: 'M0-10' }),
+      item({ id: 'M0-3' }),
+      item({ id: 'M0-2' }),
+    ];
+    expect(selectNextUnit(items)?.id).toBe('M0-2');
+  });
+
+  it('natural sort handles multi-digit milestone prefixes', () => {
+    const items = [
+      item({ id: 'M10-1' }),
+      item({ id: 'M2-1' }),
+      item({ id: 'M1-1' }),
+    ];
+    expect(selectNextUnit(items)?.id).toBe('M1-1');
+  });
+
+  it('returns lexicographically first id among ties (alphabetic prefix)', () => {
     const items = [
       item({ id: 'Z-9' }),
       item({ id: 'A-1' }),
@@ -79,7 +99,6 @@ describe('selectNextUnit', () => {
     ];
     const copy = [...items];
     selectNextUnit(items);
-    // Original order should be preserved
     expect(items[0].id).toBe(copy[0].id);
     expect(items[1].id).toBe(copy[1].id);
   });
