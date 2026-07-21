@@ -91,7 +91,12 @@ describe('assemblePrompt', () => {
 
 describe('branch naming', () => {
   it('computes branch as feat/issue-<n>', async () => {
-    const runner = makeMockRunner(baseSpec());
+    // dryRun:true — zero subprocess calls; no runner spec needed
+    const runner: CommandRunner = {
+      async run(cmd, args) {
+        throw new Error(`Unexpected subprocess call in dryRun: ${cmd} ${args.join(' ')}`);
+      },
+    };
     const result = await runBuilder({
       repo: 'owner/repo',
       issueNumber: 9,
@@ -103,13 +108,12 @@ describe('branch naming', () => {
   });
 
   it('uses the correct issue number in the branch for any issue', async () => {
-    const issueJson = JSON.stringify({ title: 'Fix bug', body: 'Fix it.' });
-    const runner = makeMockRunner({
-      'gh issue view 42 --repo owner/repo --json title,body': { stdout: issueJson, code: 0 },
-      'claude -p': { stdout: 'done', code: 0 },
-      'npm test': { stdout: '', code: 0 },
-      'npm run build': { stdout: '', code: 0 },
-    });
+    // dryRun:true — zero subprocess calls; no runner spec needed
+    const runner: CommandRunner = {
+      async run(cmd, args) {
+        throw new Error(`Unexpected subprocess call in dryRun: ${cmd} ${args.join(' ')}`);
+      },
+    };
     const result = await runBuilder({
       repo: 'owner/repo',
       issueNumber: 42,
@@ -126,8 +130,16 @@ describe('branch naming', () => {
 // ---------------------------------------------------------------------------
 
 describe('runBuilder happy path', () => {
-  it('returns implemented:true, testsPassed:true on success (dryRun)', async () => {
-    const runner = makeMockRunner(baseSpec());
+  it('dryRun:true returns planned result without invoking ANY subprocess', async () => {
+    // The mock throws on ANY unexpected call — if runner.run() is ever
+    // invoked with dryRun:true this test will fail, acting as the key
+    // regression guard for the "dry-run is not actually dry" defect.
+    const runner: CommandRunner = {
+      async run(cmd, args) {
+        throw new Error(`runner.run() must NEVER be called in dryRun mode — got: ${cmd} ${args.join(' ')}`);
+      },
+    };
+
     const result = await runBuilder({
       repo: 'owner/repo',
       issueNumber: 9,
@@ -136,10 +148,12 @@ describe('runBuilder happy path', () => {
       runner,
     });
 
-    expect(result.implemented).toBe(true);
-    expect(result.testsPassed).toBe(true);
-    expect(result.prUrl).toBeNull(); // dryRun — no PR
+    // dryRun short-circuits before any subprocess: values reflect planned state
     expect(result.branch).toBe('feat/issue-9');
+    expect(result.prUrl).toBeNull();
+    expect(result.implemented).toBe(false);
+    expect(result.testsPassed).toBe(false);
+    expect(result.dryRun).toBe(true);
   });
 
   it('returns prUrl when dryRun:false and all steps succeed', async () => {

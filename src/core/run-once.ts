@@ -4,20 +4,25 @@
  *
  * Runs one pass of the autonomous delivery loop.
  *
- * Usage (dry-run, always safe):
+ * Usage (dry-run — default, zero subprocess side-effects):
  *   node dist/core/run-once.js [--state-dir <path>] [--repo <owner/repo>] [--checkout-dir <path>]
+ *
+ *   The default path runs with dryRun:true.  No gh, claude, npm, or git
+ *   subprocesses are spawned; no files are mutated.  Safe to run anywhere.
  *
  * Usage (live — M1-2 smoke path):
  *   node dist/core/run-once.js --live [--state-dir <path>] [--repo <owner/repo>] [--checkout-dir <path>]
  *
  * --live flag:
- *   Runs the REAL (non-dryRun) Builder: invokes Claude Code CLI, runs tests/build,
- *   commits, pushes, and opens a PR. This is the M1-2 smoke path and is
- *   INTENTIONALLY BLOCKED in CI (the CI workflow does not pass --live).
- *   Only run interactively with a real gh auth token and Claude Code CLI installed.
+ *   Intended entry point for the REAL (non-dryRun) Builder: invokes Claude
+ *   Code CLI, runs tests/build, commits, pushes, and opens a PR.  Full live
+ *   wiring (dryRun:false) is implemented in M1-2; the flag is parsed here so
+ *   the CLI surface is stable but presently has no additional effect beyond
+ *   the default dry-run path.
  *
- * WARNING: --live WILL call the real Claude Code CLI, run `npm test`, `npm run build`,
- *   `git commit`, `git push`, and `gh pr create`. Do NOT run in automated environments.
+ *   --live is the ONLY intended gateway for real subprocess execution.
+ *   Do NOT run in automated environments without a real gh auth token and
+ *   Claude Code CLI installed.
  */
 
 import { runOnce } from './loop.js';
@@ -53,11 +58,11 @@ async function main() {
   const { stateDir, repo, checkoutDir, live } = parseArgs(process.argv);
 
   if (live) {
-    console.log('⚠️  --live mode: REAL builder will run (Claude Code CLI + gh + git)');
-    console.log('   This is the M1-2 smoke path. Do NOT run in CI.');
+    console.log('⚠️  --live flag detected. Full live wiring (dryRun:false) is implemented in M1-2.');
+    console.log('   For now the run proceeds in dry-run mode (zero subprocess side-effects).');
     console.log('');
   } else {
-    console.log('ℹ️  Dry-run mode (default). Pass --live to run the real builder (M1-2 smoke path).');
+    console.log('ℹ️  Dry-run mode (default, zero subprocess side-effects). Pass --live for the real builder (M1-2 smoke path).');
     console.log('');
   }
 
@@ -65,10 +70,10 @@ async function main() {
     repo,
     checkoutDir,
     stateDir,
-    // In non-live mode, runOnce always uses dryRun:true internally.
-    // In live mode, we pass no runner so DefaultCommandRunner is used, but
-    // we'd need to extend runOnce to accept live:true for a full M1-2 impl.
-    // For now --live documents the intent; full live wiring is M1-2.
+    // dryRun:true is enforced inside loop.ts (runBuilder is always called with
+    // dryRun:true in M1-1).  No runner is injected here so DefaultCommandRunner
+    // would be the fallback — but dryRun:true short-circuits before any
+    // runner.run() call, so no real subprocess can be invoked.
   });
 
   console.log('═══════════════════════════════════════════════════');
@@ -90,7 +95,7 @@ async function main() {
 
   if (live) {
     console.log('');
-    console.log('ℹ️  NOTE: Full live wiring (real dryRun:false) is implemented in M1-2.');
+    console.log('ℹ️  NOTE: Full live wiring (real dryRun:false) is implemented in M1-2.  This run used dry-run mode.');
   }
 }
 

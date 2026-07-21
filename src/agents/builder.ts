@@ -69,6 +69,13 @@ export interface BuilderResult {
   prUrl: string | null;
   testsPassed: boolean;
   implemented: boolean;
+  /**
+   * True when the run was a dry-run: no subprocesses were invoked, no files
+   * were mutated. All other fields reflect the *planned* state only.
+   * Absent (undefined) on real (live) runs — backward-compatible with callers
+   * that do not check this field.
+   */
+  dryRun?: true;
 }
 
 // ---------------------------------------------------------------------------
@@ -90,18 +97,41 @@ export interface BuilderOptions {
  *
  * All subprocess calls go through `runner` — inject a mock in tests so
  * claude/gh/network are NEVER called in CI.
+ *
+ * When `dryRun` is true this function performs ZERO subprocess side-effects:
+ * it computes the branch name and assembles the prompt, then returns early
+ * with a clearly-labelled planned result.  No gh, claude, npm, git, or any
+ * other subprocess is invoked.
  */
 export async function runBuilder(opts: BuilderOptions): Promise<BuilderResult> {
   const { repo, issueNumber, checkoutDir, dryRun = false } = opts;
   validateRepo(repo);
 
+  // (b) Compute branch name — pure, no I/O
+  const branch = `feat/issue-${issueNumber}`;
+
+  // ─── DRY-RUN SHORT-CIRCUIT ───────────────────────────────────────────────
+  // When dryRun is true we must not invoke any subprocess (gh, claude, npm,
+  // git).  Assemble the prompt using placeholder issue data (no network call)
+  // and return a planned result immediately.
+  if (dryRun) {
+    // Use placeholder data so the prompt is still assembled (useful for
+    // inspection) without touching the network.
+    assemblePrompt({
+      repo,
+      issueNumber,
+      title: `issue #${issueNumber}`,
+      body: '(dry-run placeholder — issue not fetched)',
+      branch,
+    });
+    return { branch, prUrl: null, testsPassed: false, implemented: false, dryRun: true };
+  }
+  // ─────────────────────────────────────────────────────────────────────────
+
   const runner: CommandRunner = opts.runner ?? new DefaultCommandRunner();
 
   // (a) Fetch issue title + body
   const { title, body } = await fetchIssue(runner, repo, issueNumber);
-
-  // (b) Compute branch name
-  const branch = `feat/issue-${issueNumber}`;
 
   // (c) Assemble implementation prompt
   const prompt = assemblePrompt({ repo, issueNumber, title, body, branch });
@@ -121,11 +151,7 @@ export async function runBuilder(opts: BuilderOptions): Promise<BuilderResult> {
     return { branch, prUrl: null, testsPassed: false, implemented: true };
   }
 
-  // (f) If tests pass and not dryRun, commit + push + open PR
-  if (dryRun) {
-    return { branch, prUrl: null, testsPassed: true, implemented: true };
-  }
-
+  // (f) Tests passed — commit + push + open PR
   const prUrl = await commitPushAndPR(runner, repo, branch, issueNumber, title, checkoutDir);
   return { branch, prUrl, testsPassed: true, implemented: true };
 }
