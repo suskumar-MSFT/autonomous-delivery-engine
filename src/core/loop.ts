@@ -70,9 +70,14 @@ export interface RunOnceOptions {
   cap?: LoopCap;
   /**
    * Injectable start timestamp (milliseconds since epoch) for deterministic
-   * cap testing.  Default: `Date.now()` at the top of `runOnce`.
+   * cap testing.  Default: `now()` at the top of `runOnce`.
    */
   startedAt?: number;
+  /**
+   * Injectable clock for deterministic cap testing.  Default: `Date.now`.
+   * When `startedAt` is omitted it defaults to `now()`.
+   */
+  now?: () => number;
   /**
    * Injectable builder function.  Default: `runBuilder` from agents/builder.ts.
    * Inject a mock in tests to decouple loop logic from the builder subprocess chain.
@@ -129,8 +134,9 @@ export async function runOnce(opts: RunOnceOptions): Promise<RunOnceResult> {
     reviewer,
     live = false,
     builderFn = runBuilder,
-    startedAt = Date.now(),
+    now = Date.now,
   } = opts;
+  const startedAt = opts.startedAt ?? now();
   const capMs = opts.cap?.capMs ?? DEFAULT_CAP_MS;
 
   // ── 1. Read + parse backlog ───────────────────────────────────────────────
@@ -171,7 +177,7 @@ export async function runOnce(opts: RunOnceOptions): Promise<RunOnceResult> {
   releaseOwnerInFile(stateDir, selected.id, `bot (${result.prUrl})`);
 
   // ── 7. Wall-clock cap (pre-gate) ─────────────────────────────────────────
-  if (Date.now() - startedAt > capMs) {
+  if (now() - startedAt > capMs) {
     return { selected, result, mergeStatus: 'capped' };
   }
 
@@ -201,7 +207,7 @@ export async function runOnce(opts: RunOnceOptions): Promise<RunOnceResult> {
   }
 
   // ── 10. Wall-clock cap (post-reviewer) ───────────────────────────────────
-  if (Date.now() - startedAt > capMs) {
+  if (now() - startedAt > capMs) {
     return { selected, result, mergeStatus: 'capped' };
   }
 

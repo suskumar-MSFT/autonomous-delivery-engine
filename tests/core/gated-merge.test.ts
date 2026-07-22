@@ -427,19 +427,28 @@ describe('wall-clock cap', () => {
     expect(mergeStatus).toBe('capped');
   });
 
-  it('returns capped when cap is exceeded after CI check (between reviewer and merge)', async () => {
+  it('returns capped when the cap is exceeded post-reviewer (deterministic clock)', async () => {
     const stateDir = makeTmpStateDir();
     let checksCallCount = 0;
     const runner: CommandRunner = {
-      async run(cmd, args) {
-        if (args[0] === 'checks') {
+      async run(_cmd, args) {
+        if (args[0] === 'pr' && args[1] === 'checks') {
           checksCallCount++;
           return { stdout: CI_GREEN_RESPONSE, stderr: '', code: 0 };
         }
-        // merge calls also acceptable if cap doesn't fire first
+        if (args[0] === 'pr' && args[1] === 'merge') {
+          throw new Error('merge must not be called when capped');
+        }
         return { stdout: '', stderr: '', code: 0 };
       },
     };
+
+    // Injectable clock: 1st read (pre-CI cap) sees elapsed 0 → no cap, so the
+    // CI check IS reached; 2nd read (post-reviewer cap) sees elapsed > cap →
+    // 'capped' fires before merge. Deterministic — no wall-clock flakiness.
+    const start = 1_000_000;
+    let nowCall = 0;
+    const now = () => (++nowCall <= 1 ? start : start + 100);
 
     const { mergeStatus } = await runOnce({
       repo: 'owner/repo',
@@ -449,13 +458,13 @@ describe('wall-clock cap', () => {
       builderFn: mockBuilderFn(liveBuilderResult()),
       reviewer: passReviewer(),
       live: true,
-      startedAt: Date.now(),
-      cap: { capMs: 0 }, // 0ms — any elapsed time exceeds cap
+      startedAt: start,
+      now,
+      cap: { capMs: 50 },
     });
-    // With capMs:0, either the pre-CI cap or post-CI cap fires.
-    // Either way the result must be 'capped' — never 'merged' or 'blocked-*'.
-    expect(checksCallCount).toBeGreaterThanOrEqual(0); // may or may not reach CI check
-    expect(['capped', 'merged']).toContain(mergeStatus);
+
+    expect(checksCallCount).toBe(1); // CI check was reached (pre-CI cap did NOT fire)
+    expect(mergeStatus).toBe('capped'); // post-reviewer cap fired before merge
   });
 
   it('allows merge when well within cap', async () => {
