@@ -14,6 +14,23 @@ function validateRepo(repo: string): void {
   }
 }
 
+/**
+ * Returns true when an error looks like a gh authentication failure.
+ * Inspects the error message and, for ExecFileException, the `stderr` property.
+ */
+export function looksLikeAuthError(err: unknown): boolean {
+  const msg = err instanceof Error ? err.message : String(err);
+  const stderr = (err != null && typeof err === 'object') ? (err as { stderr?: string }).stderr ?? '' : '';
+  const combined = `${msg}\n${stderr}`.toLowerCase();
+  return (
+    combined.includes('not logged in') ||
+    combined.includes('authentication required') ||
+    combined.includes('auth token') ||
+    combined.includes('please run: gh auth login') ||
+    /\b(401|403)\b/.test(combined)
+  );
+}
+
 export interface Issue {
   number: number;
   title: string;
@@ -24,13 +41,27 @@ export interface Issue {
 /**
  * Shells out to `gh` CLI (via execFile — no shell) to list issues.
  * Falls back to `gh api` if the primary command fails.
+ * When both paths fail, throws a combined error so the caller can see both failure messages.
  */
 export async function listIssues(repo: string, state = 'open'): Promise<Issue[]> {
   validateRepo(repo);
+  let primaryErr: unknown;
   try {
     return await listIssuesViaCli(repo, state);
-  } catch (_primary) {
+  } catch (err) {
+    primaryErr = err;
+  }
+  try {
     return await listIssuesFallback(repo, state);
+  } catch (fallbackErr) {
+    const primary = primaryErr instanceof Error ? primaryErr.message : String(primaryErr);
+    const fallback = fallbackErr instanceof Error ? fallbackErr.message : String(fallbackErr);
+    const authHint = looksLikeAuthError(primaryErr) || looksLikeAuthError(fallbackErr)
+      ? ' (authentication may be required — run `gh auth login`)'
+      : '';
+    throw new Error(
+      `gh issue list failed on both paths${authHint}.\n  CLI: ${primary}\n  API: ${fallback}`,
+    );
   }
 }
 
