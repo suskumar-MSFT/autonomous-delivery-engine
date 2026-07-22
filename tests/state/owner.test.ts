@@ -131,11 +131,12 @@ describe('claimOwnerInMarkdown', () => {
 
   it('handles the real BACKLOG.md format (reads real fixture)', () => {
     const md = readFileSync(REAL_FIXTURE, 'utf8');
-    const result = claimOwnerInMarkdown(md, 'M0-2', 'bot');
+    // M0-3 is unowned in the current fixture; claim it
+    const result = claimOwnerInMarkdown(md, 'M0-3', 'bot');
     const lines = result.split('\n');
     const row = lines.find(l => {
       const cells = l.split('|');
-      return cells.length > 1 && cells[1].trim() === 'M0-2';
+      return cells.length > 1 && cells[1].trim() === 'M0-3';
     });
     expect(row).toBeDefined();
     expect(row!.split('|')[6].trim()).toBe('bot');
@@ -223,12 +224,13 @@ describe('claimOwnerInFile', () => {
 
   it('works with the real-state BACKLOG.md fixture', () => {
     const dir = makeTmpStateDirFromReal();
-    claimOwnerInFile(dir, 'M0-2', 'bot');
+    // M0-3 is unowned in the current fixture; claim it
+    claimOwnerInFile(dir, 'M0-3', 'bot');
 
     const written = readFileSync(join(dir, 'BACKLOG.md'), 'utf8');
     const row = written.split('\n').find(l => {
       const cells = l.split('|');
-      return cells.length > 1 && cells[1].trim() === 'M0-2';
+      return cells.length > 1 && cells[1].trim() === 'M0-3';
     });
     expect(row).toBeDefined();
     expect(row!.split('|')[6].trim()).toBe('bot');
