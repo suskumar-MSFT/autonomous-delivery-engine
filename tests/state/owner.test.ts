@@ -34,6 +34,18 @@ const SYNTHETIC_MD_WITH_NOTES = `# Backlog
 | M1-2 | 6   | Builder     | story | ready  |       | another note  |
 `;
 
+// Markdown with two rows sharing the same ID (duplicate/corrupted state)
+const SYNTHETIC_MD_DUPS = `# Backlog
+
+## Items
+
+| ID   | GH# | Title         | Type  | Status | Owner |
+|------|-----|---------------|-------|--------|-------|
+| M0-1 | 2   | First copy    | story | ready  |       |
+| M0-1 | 3   | Duplicate row | story | ready  | —     |
+| M0-2 | 4   | Other story   | story | ready  |       |
+`;
+
 // ---------------------------------------------------------------------------
 // Temp dir helpers
 // ---------------------------------------------------------------------------
@@ -141,6 +153,32 @@ describe('claimOwnerInMarkdown', () => {
     expect(row).toBeDefined();
     expect(row!.split('|')[6].trim()).toBe('bot');
   });
+
+  it('only updates the FIRST matching row when duplicate IDs exist (claim guard)', () => {
+    // Both rows have ID M0-1 and are unowned — only the first should be claimed
+    const result = claimOwnerInMarkdown(SYNTHETIC_MD_DUPS, 'M0-1', 'bot');
+    const lines = result.split('\n');
+    const rows = lines.filter(l => {
+      const cells = l.split('|');
+      return cells.length > 1 && cells[1].trim() === 'M0-1';
+    });
+    expect(rows).toHaveLength(2);
+    // First row claimed
+    expect(rows[0].split('|')[6].trim()).toBe('bot');
+    // Second row (duplicate) must remain unmodified
+    expect(rows[1].split('|')[6].trim()).toBe('\u2014');
+  });
+
+  it('does not touch unrelated rows when duplicate IDs exist', () => {
+    const result = claimOwnerInMarkdown(SYNTHETIC_MD_DUPS, 'M0-1', 'bot');
+    const lines = result.split('\n');
+    const m02Row = lines.find(l => {
+      const cells = l.split('|');
+      return cells.length > 1 && cells[1].trim() === 'M0-2';
+    });
+    expect(m02Row).toBeDefined();
+    expect(m02Row!.split('|')[6].trim()).toBe(''); // unchanged
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -182,6 +220,21 @@ describe('releaseOwnerInMarkdown', () => {
     expect(row!.split('|')[6].trim()).toBe(newOwner);
     // Other rows must not be corrupted
     expect(result).toContain('| M0-3 ');
+  });
+
+  it('only updates the FIRST matching row when duplicate IDs exist (release guard)', () => {
+    // Both rows share ID M0-1 (first unowned, second em-dash); release should only touch first
+    const result = releaseOwnerInMarkdown(SYNTHETIC_MD_DUPS, 'M0-1', 'bot (PR #99)');
+    const lines = result.split('\n');
+    const rows = lines.filter(l => {
+      const cells = l.split('|');
+      return cells.length > 1 && cells[1].trim() === 'M0-1';
+    });
+    expect(rows).toHaveLength(2);
+    // First row updated
+    expect(rows[0].split('|')[6].trim()).toBe('bot (PR #99)');
+    // Second row (duplicate) must remain unmodified
+    expect(rows[1].split('|')[6].trim()).toBe('\u2014');
   });
 });
 
