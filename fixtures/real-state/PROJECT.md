@@ -10,18 +10,11 @@ per-milestone plan → delegated implementation → continuous monitoring & auto
 human approval gates and hard guardrails. **The product is the system itself.**
 
 ## Current phase
-- **Phase:** `PHASE -1 COMPLETE (✅ validated) → M0 — RE-SCOPED ENGINE BUILD`
+- **Phase:** `M1 — ORCHESTRATED BUILDER (builder + loop + work-order Builder all merged; wiring the runtime fulfiller)`
 - **Date entered:** 2026-07-21
-- **Phase -1 result:** ✅ **Validated.** Hand-drove a real operator idea (`outfit-combos`, Outfyt's
-  combinatorial core) → green-CI PR on the *existing* substrate in **~7.6 min unattended, 0
-  human code touches**. Live artifact: `suskumar-MSFT/outfit-combos#1` (green 2/2). Proved the
-  substrate is already a working **Builder** (FND-001) and that hosted CI works on the personal
-  account (FND-002 → ADR-015 Option A).
-- **Focus now (M0):** Re-scope the engine away from re-building a Builder. Build only the pieces
-  the substrate *lacks*: the **deterministic loop controller** (next-unit selection, ownership
-  locking, caps, kill-switch, digest), the **CI/done-bar gate**, and the **front-of-pipeline**
-  (idea→decomposition + decision ledger) — orchestrating the substrate's sub-agents as the
-  Builder rather than reinventing one (ADR-012, FND-001).
+- **M1 progress:** ✅ M1-1 (builder module, mocked) + ✅ M1-3 (loop controller: ownership-claim + gated-merge + Reviewer hook + wall-clock cap) + ✅ **M1-2 (work-order Builder, ADR-020)** MERGED (PR #10, #13, #14). Repo default branch fixed → `main`.
+- **Now:** wire the **runtime fulfiller** — a work-claw schedule that watches `work-orders\<id>.json`, spawns a `developer` sub-agent to implement each, and writes `work-orders\<id>.result.json` (PR URL). This closes the work-order Builder loop end-to-end — the first time the *engine* drives a live change.
+- **Loop trigger installed (ADR-021):** work-claw job `Autonomous Delivery Loop — Trigger` (every 2h) now advances the loop between human messages. Kill-switch: add a `LOOP PAUSED` line to this file or say "pause".
 
 ## Committed choices
 | # | Decision | Choice | ADR |
@@ -42,10 +35,12 @@ human approval gates and hard guardrails. **The product is the system itself.**
 - Build log → `logs\<date>.md`
 
 ## Next action
-**M0 kickoff (re-scoped).** Author the re-scoped M0 spec in `design\` and decompose into GitHub
-issues (under `suskumar-MSFT`): (1) deterministic **loop controller** (next-unit selection,
-ownership lock in `BACKLOG`, caps, kill-switch, async digest); (2) **CI/done-bar gate** wired to
-hosted Actions on `suskumar-MSFT`; (3) **front-of-pipeline** (idea→decomposition + decision-ledger
-sync). Explicitly **do not** build a bespoke Builder — orchestrate the work-claw `developer`
-sub-agent as the Builder (FND-001, ADR-012). Present the re-scoped M0 plan to the operator as an
-async checkpoint, then run the Autonomy Model loop.
+**Wire the runtime fulfiller** (the M1-2 counterpart, as a schedule not code). `WorkOrderBuilder` is
+merged (PR #14): the engine now *emits* `work-orders\<id>.json` and polls for `work-orders\<id>.result.json`.
+What's missing is the *fulfiller*: a work-claw scheduled job that watches `work-orders\*.json`, spawns a
+`developer` sub-agent to implement each work-order → opens the PR → writes `work-orders\<id>.result.json`
+with the PR URL. Wiring that closes the loop end-to-end (engine drives a live change for the first time).
+Then a real E2E dry-then-live run of `runOnce` against one issue is the M1 exit criterion.
+
+**Loop now self-advances** via the `Autonomous Delivery Loop — Trigger` job (every 2h, ADR-021) — no
+human message required to continue.

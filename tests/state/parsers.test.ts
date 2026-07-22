@@ -126,6 +126,58 @@ describe('parseBacklog (synthetic fixtures)', () => {
     const items = parseBacklog(bad);
     expect(items[0].ghNumber).toBe(0);
   });
+
+  // ── Hardening: malformed/edge-case table rows ─────────────────────────────
+
+  it('skips rows with fewer than 6 columns silently', () => {
+    const md = `# B\n## Items\n| ID | GH# | Title | Type | Status | Owner |\n|---|---|---|---|---|---|\n` +
+      `| short | 1 | title |\n` +  // 3 cols — skipped
+      `| X-1 | 2 | full title | story | ready | |\n`;
+    const items = parseBacklog(md);
+    expect(items).toHaveLength(1);
+    expect(items[0].id).toBe('X-1');
+  });
+
+  it('handles rows with extra columns (Notes column) without error', () => {
+    const md = `# B\n## Items\n| ID | GH# | Title | Type | Status | Owner | Notes |\n|---|---|---|---|---|---|---|\n` +
+      `| X-1 | #3 | my title | bug | done | bot | extra note |\n`;
+    const items = parseBacklog(md);
+    expect(items).toHaveLength(1);
+    expect(items[0].id).toBe('X-1');
+    expect(items[0].ghNumber).toBe(3);
+    expect(items[0].type).toBe('bug');
+    expect(items[0].status).toBe('done');
+    expect(items[0].owner).toBe('bot');
+  });
+
+  it('skips rows with empty ID', () => {
+    const md = `# B\n## Items\n| ID | GH# | Title | Type | Status | Owner |\n|---|---|---|---|---|---|\n` +
+      `|  | 1 | title | story | ready | |\n` +
+      `| X-1 | 2 | title | story | ready | |\n`;
+    const items = parseBacklog(md);
+    expect(items).toHaveLength(1);
+    expect(items[0].id).toBe('X-1');
+  });
+
+  it('trims extra whitespace in all cell values', () => {
+    const md = `# B\n## Items\n| ID | GH# | Title | Type | Status | Owner |\n|---|---|---|---|---|---|\n` +
+      `|  X-1  |  #5  |  my story  |  story  |  ready  |  |  |\n`;
+    const items = parseBacklog(md);
+    expect(items[0].id).toBe('X-1');
+    expect(items[0].ghNumber).toBe(5);
+    expect(items[0].title).toBe('my story');
+  });
+
+  it('parses all status emoji variants', () => {
+    const mkRow = (status: string) =>
+      `| X | 1 | t | story | ${status} | |`;
+    const header = `# B\n## Items\n| ID | GH# | Title | Type | Status | Owner |\n|---|---|---|---|---|---|\n`;
+    expect(parseBacklog(header + mkRow('✅ done'))[0].status).toBe('done');
+    expect(parseBacklog(header + mkRow('🔵 in-progress'))[0].status).toBe('in-progress');
+    expect(parseBacklog(header + mkRow('👀 in-review'))[0].status).toBe('in-review');
+    expect(parseBacklog(header + mkRow('⬜ ready'))[0].status).toBe('ready');
+    expect(parseBacklog(header + mkRow('⛔ blocked'))[0].status).toBe('blocked');
+  });
 });
 
 // ─── parseBacklog — real fixtures ────────────────────────────────────────────
@@ -135,12 +187,15 @@ describe('parseBacklog (real BACKLOG.md)', () => {
     expect(() => parseBacklog(fixture(REAL, 'BACKLOG.md'))).not.toThrow();
   });
 
-  it('finds M0-2 and M0-3 as ready+unowned items', () => {
+  it('finds ready+unowned items (M0-3, M1-4, M1-5)', () => {
     const items = parseBacklog(fixture(REAL, 'BACKLOG.md'));
     const ready = items.filter(i => i.status === 'ready' && i.owner === '');
     const ids = ready.map(i => i.id);
-    expect(ids).toContain('M0-2');
+    // M0-2 is now in-progress (claimed by loop-bot); M0-3, M1-4, M1-5 are ready
     expect(ids).toContain('M0-3');
+    expect(ids).toContain('M1-4');
+    expect(ids).toContain('M1-5');
+    expect(ids).not.toContain('M0-2');
   });
 
   it('parses emoji statuses correctly (in-progress, ready)', () => {
@@ -148,8 +203,10 @@ describe('parseBacklog (real BACKLOG.md)', () => {
     const m0 = items.find(i => i.id === 'M0');
     expect(m0).toBeDefined();
     expect(m0!.status).toBe('in-progress');
-    const m02 = items.find(i => i.id === 'M0-2');
-    expect(m02!.status).toBe('ready');
+    // M0-2 is now claimed (in-progress); M0-3 is ready
+    const m03 = items.find(i => i.id === 'M0-3');
+    expect(m03).toBeDefined();
+    expect(m03!.status).toBe('ready');
   });
 
   it('parses #n gh-numbers correctly', () => {
@@ -161,8 +218,13 @@ describe('parseBacklog (real BACKLOG.md)', () => {
 
   it('maps em-dash owner to empty string', () => {
     const items = parseBacklog(fixture(REAL, 'BACKLOG.md'));
+    // M0-3 is unowned (em-dash); M0-2 is claimed (owner = loop-bot)
+    const m03 = items.find(i => i.id === 'M0-3');
+    expect(m03).toBeDefined();
+    expect(m03!.owner).toBe('');
     const m02 = items.find(i => i.id === 'M0-2');
-    expect(m02!.owner).toBe('');
+    expect(m02).toBeDefined();
+    expect(m02!.owner).toBe('loop-bot');
   });
 });
 
@@ -188,6 +250,57 @@ describe('parseProject (synthetic fixtures)', () => {
     const project = parseProject('## Phase\n0');
     expect(project.focus).toBe('');
   });
+
+  // ── Phase extraction edge cases ───────────────────────────────────────────
+
+  it('extracts clean phase from backtick-wrapped bullet', () => {
+    const md = '## Current phase\n- **Phase:** `M1 — ORCHESTRATED BUILDER`\n- **Date entered:** 2026-07-01\n';
+    const project = parseProject(md);
+    expect(project.phase).toBe('M1 — ORCHESTRATED BUILDER');
+    // Must NOT contain backticks or "Phase:" label
+    expect(project.phase).not.toContain('`');
+    expect(project.phase).not.toContain('**Phase');
+  });
+
+  it('extracts clean phase from bare bullet (no backticks)', () => {
+    const md = '## Current phase\n- **Phase:** M0 crawl\n';
+    const project = parseProject(md);
+    expect(project.phase).toBe('M0 crawl');
+    expect(project.phase).not.toContain('**');
+  });
+
+  it('strips bold markers from fallback first-line phase', () => {
+    const md = '## Current phase\n**M0** — some phase\n';
+    const project = parseProject(md);
+    expect(project.phase).not.toContain('**');
+    expect(project.phase).toContain('M0');
+  });
+
+  // ── Focus extraction edge cases ───────────────────────────────────────────
+
+  it('extracts focus from inline "- **Now:** ..." bullet', () => {
+    const md = '## Current phase\n- **Phase:** `M1`\n- **Now:** wire the fulfiller\n';
+    const project = parseProject(md);
+    expect(project.focus).toBe('wire the fulfiller');
+  });
+
+  it('extracts focus from inline "- **Focus now (M0):** ..." bullet', () => {
+    const md = '## Current phase\n- **Phase:** `M0`\n- **Focus now (M0):** Re-scope the engine\n';
+    const project = parseProject(md);
+    expect(project.focus).toBe('Re-scope the engine');
+  });
+
+  it('falls back to ## Focus section when no inline focus bullet', () => {
+    const md = '## Current phase\n- **Phase:** `M0`\n\n## Focus\nClean up state readers\n';
+    const project = parseProject(md);
+    expect(project.focus).toBe('Clean up state readers');
+  });
+
+  it('inline focus wins over ## Focus section', () => {
+    const md = '## Current phase\n- **Phase:** `M0`\n- **Now:** inline focus\n\n## Focus\nseparate section\n';
+    const project = parseProject(md);
+    expect(project.focus).toBe('inline focus');
+  });
 });
 
 // ─── parseProject — real fixtures ────────────────────────────────────────────
@@ -197,13 +310,24 @@ describe('parseProject (real PROJECT.md)', () => {
     expect(() => parseProject(fixture(REAL, 'PROJECT.md'))).not.toThrow();
   });
 
-  it('returns a non-empty phase string', () => {
+  it('extracts clean phase — no backtick wrappers, no "**Phase:**" label', () => {
     const project = parseProject(fixture(REAL, 'PROJECT.md'));
     expect(project.phase.length).toBeGreaterThan(0);
+    expect(project.phase).not.toContain('`');
+    expect(project.phase).not.toMatch(/\*\*Phase/);
+    expect(project.phase).not.toMatch(/^-\s/);
   });
 
-  it('focus is a string', () => {
+  it('phase contains the milestone label (M1)', () => {
     const project = parseProject(fixture(REAL, 'PROJECT.md'));
+    // The current fixture is M1-era; the phase label starts with M1
+    expect(project.phase).toMatch(/^M1/);
+  });
+
+  it('focus is non-empty (inline Now bullet is present)', () => {
+    const project = parseProject(fixture(REAL, 'PROJECT.md'));
+    // The M1 fixture has "- **Now:** wire the runtime fulfiller ..."
+    expect(project.focus.length).toBeGreaterThan(0);
     expect(typeof project.focus).toBe('string');
   });
 });

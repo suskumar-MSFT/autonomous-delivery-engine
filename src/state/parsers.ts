@@ -175,25 +175,68 @@ export function parseBacklog(md: string): BacklogItem[] {
 }
 
 /**
+ * Strips common markdown formatting from a single-line value:
+ * surrounding backticks, **bold**, *italic*, and leading list/label cruft.
+ */
+function stripMarkdownInline(raw: string): string {
+  return raw
+    .replace(/^`(.*)`$/, '$1')   // strip surrounding backticks
+    .replace(/\*\*([^*]+)\*\*/g, '$1')  // strip bold markers
+    .replace(/\*([^*]+)\*/g, '$1')       // strip italic markers
+    .trim();
+}
+
+/**
  * Parses PROJECT.md markdown into ProjectState.
  *
  * Accepts both "## Current phase" and "## Phase" as the phase heading.
- * Focus section is optional (returns empty string if absent).
+ *
+ * Phase extraction (in priority order):
+ *   1. Bullet `- **Phase[...]:** \`...\`` — extracts the backtick-wrapped value.
+ *   2. Bullet `- **Phase[...]:** ...` — extracts the bare value.
+ *   3. Fallback: first non-empty line after stripping markdown formatting.
+ *
+ * Focus extraction (in priority order):
+ *   1. Inline bullet `- **Now:** ...` or `- **Focus[...]: ...` in the phase section.
+ *   2. Separate `## Focus` heading (original ADR-016 path).
+ *   3. Empty string if neither is present.
  */
 export function parseProject(md: string): ProjectState {
   const phaseSection = extractSectionAny(md, 'Current phase', 'Phase');
-  // Take first non-empty line as a concise phase label
-  const phaseLines = phaseSection.trim().split('\n').map(l => l.trim()).filter(l => l.length > 0);
-  const phase = phaseLines.length > 0 ? phaseLines[0] : phaseSection.trim();
 
-  // Focus is optional per ADR-016
+  // 1. Try "- **Phase...:** `value`" (backtick-wrapped)
+  let phase = '';
+  const backtickMatch = phaseSection.match(/^\s*-\s+\*\*Phase[^*]*\*\*:?\s*`([^`]+)`/m);
+  if (backtickMatch) {
+    phase = backtickMatch[1].trim();
+  } else {
+    // 2. Try "- **Phase...:** bare value"
+    const bareMatch = phaseSection.match(/^\s*-\s+\*\*Phase[^*]*\*\*:?\s*(.+)/m);
+    if (bareMatch) {
+      phase = stripMarkdownInline(bareMatch[1].trim());
+    } else {
+      // 3. Fallback: first non-empty line, strip markdown
+      const lines = phaseSection.trim().split('\n').map(l => l.trim()).filter(l => l.length > 0);
+      phase = lines.length > 0 ? stripMarkdownInline(lines[0]) : '';
+    }
+  }
+
+  // Focus: inline bullet in the phase section wins over a separate ## Focus section.
   let focus = '';
-  try {
-    const focusSection = extractSection(md, 'Focus').trim();
-    const focusLines = focusSection.split('\n').map(l => l.trim()).filter(l => l.length > 0);
-    focus = focusLines.length > 0 ? focusLines[0] : focusSection;
-  } catch {
-    // not required
+  // Matches "- **Now:** ..." or "- **Focus[anything]:** ..."
+  // Note: the colon may appear inside the bold markers (**Now:**) or after them (**Now**:)
+  const inlineFocusMatch = phaseSection.match(/^\s*-\s+\*\*(?:Now|Focus)[^*]*\*\*:?\s*(.+)/m);
+  if (inlineFocusMatch) {
+    focus = inlineFocusMatch[1].trim();
+  } else {
+    // Fallback: separate ## Focus section (ADR-016 original path)
+    try {
+      const focusSection = extractSection(md, 'Focus').trim();
+      const focusLines = focusSection.split('\n').map(l => l.trim()).filter(l => l.length > 0);
+      focus = focusLines.length > 0 ? focusLines[0] : focusSection;
+    } catch {
+      // not required
+    }
   }
 
   return { phase, focus };
