@@ -61,13 +61,16 @@ function replaceOwnerCell(cells: string[], newOwner: string): string {
  */
 export function claimOwnerInMarkdown(md: string, unitId: string, newOwner: string): string {
   const lines = md.split('\n');
+  let touched = false; // stop after the first matching row to guard against duplicate IDs
   const updated = lines.map(line => {
+    if (touched) return line;
     const cells = findRowCells(line, unitId);
     if (!cells) return line;
     // Idempotent: only claim if currently unowned
     const currentOwner = cells[6]?.trim() ?? '';
-    if (currentOwner === newOwner) return line; // already this owner — no-op
-    if (!isEmptyOwner(currentOwner)) return line; // already owned by someone else — skip
+    if (currentOwner === newOwner) { touched = true; return line; } // already this owner — no-op
+    if (!isEmptyOwner(currentOwner)) { touched = true; return line; } // already owned by someone else — skip
+    touched = true;
     return replaceOwnerCell([...cells], newOwner);
   });
   return updated.join('\n');
@@ -81,11 +84,14 @@ export function claimOwnerInMarkdown(md: string, unitId: string, newOwner: strin
  */
 export function releaseOwnerInMarkdown(md: string, unitId: string, newOwner: string): string {
   const lines = md.split('\n');
+  let touched = false; // stop after the first matching row to guard against duplicate IDs
   const updated = lines.map(line => {
+    if (touched) return line;
     const cells = findRowCells(line, unitId);
     if (!cells) return line;
     const current = cells[6]?.trim() ?? '';
-    if (current === newOwner) return line; // already the target value — no-op
+    if (current === newOwner) { touched = true; return line; } // already the target value — no-op
+    touched = true;
     return replaceOwnerCell([...cells], newOwner);
   });
   return updated.join('\n');
