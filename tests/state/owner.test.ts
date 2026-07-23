@@ -46,6 +46,19 @@ const SYNTHETIC_MD_DUPS = `# Backlog
 | M0-2 | 4   | Other story   | story | ready  |       |
 `;
 
+// Dup fixture where the FIRST row is already owned by someone else;
+// the second row (same ID) is unowned — must NOT be claimed.
+const SYNTHETIC_MD_DUPS_FIRST_OWNED = `# Backlog
+
+## Items
+
+| ID   | GH# | Title         | Type  | Status | Owner |
+|------|-----|---------------|-------|--------|-------|
+| M0-1 | 2   | First copy    | story | ready  | alice |
+| M0-1 | 3   | Duplicate row | story | ready  |       |
+| M0-2 | 4   | Other story   | story | ready  |       |
+`;
+
 // ---------------------------------------------------------------------------
 // Temp dir helpers
 // ---------------------------------------------------------------------------
@@ -178,6 +191,21 @@ describe('claimOwnerInMarkdown', () => {
     });
     expect(m02Row).toBeDefined();
     expect(m02Row!.split('|')[6].trim()).toBe(''); // unchanged
+  });
+
+  it('does NOT claim the second dup row when the first row is already owned by someone else', () => {
+    // Row 1: M0-1 owned by "alice" (blocked). Row 2: M0-1 unowned.
+    // Calling claim("M0-1", "bob") must leave BOTH rows unchanged —
+    // touched=true on the blocked row prevents falling through to row 2.
+    const result = claimOwnerInMarkdown(SYNTHETIC_MD_DUPS_FIRST_OWNED, 'M0-1', 'bob');
+    const lines = result.split('\n');
+    const rows = lines.filter(l => {
+      const cells = l.split('|');
+      return cells.length > 1 && cells[1].trim() === 'M0-1';
+    });
+    expect(rows).toHaveLength(2);
+    expect(rows[0].split('|')[6].trim()).toBe('alice'); // blocked — unchanged
+    expect(rows[1].split('|')[6].trim()).toBe('');      // NOT claimed despite being unowned
   });
 });
 
