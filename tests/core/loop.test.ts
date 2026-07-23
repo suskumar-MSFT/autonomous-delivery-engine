@@ -90,4 +90,61 @@ describe('runOnce', () => {
     expect(result?.dryRun).toBe(true);
     expect(result?.branch).toMatch(/^feat\/issue-\d+$/);
   });
+
+  // ── M1-5: repo validation independent of builderFn ───────────────────────
+
+  it('throws synchronously on an invalid repo string (dryRun path)', async () => {
+    // M1-5: runOnce must reject malformed repo before dispatching builderFn.
+    // A custom builderFn is injected to confirm it is NEVER called — the guard
+    // fires before the backlog read.
+    let builderCalled = false;
+    const invalidRepos = [
+      '',
+      'no-slash',
+      'owner/repo; rm -rf /',
+      'owner/repo | cat',
+      'owner repo',
+      '../traversal/repo',
+    ];
+
+    for (const badRepo of invalidRepos) {
+      await expect(
+        runOnce({
+          repo: badRepo,
+          checkoutDir: '/tmp/checkout',
+          stateDir: FIXTURES_STATE_DIR,
+          builderFn: async () => {
+            builderCalled = true;
+            return { branch: '', implemented: false, testsPassed: false, prUrl: null, dryRun: true };
+          },
+        }),
+      ).rejects.toThrow(/Invalid repo/);
+    }
+
+    expect(builderCalled).toBe(false);
+  });
+
+  it('accepts a valid repo string and does not call the default runner (dryRun path)', async () => {
+    // M1-5: confirm valid repos pass the guard and proceed normally.
+    const validRepos = [
+      'owner/repo',
+      'suskumar-MSFT/autonomous-delivery-engine',
+      'org.name/repo.name',
+      'a/b',
+    ];
+
+    for (const goodRepo of validRepos) {
+      const { result } = await runOnce({
+        repo: goodRepo,
+        checkoutDir: '/tmp/checkout',
+        stateDir: FIXTURES_STATE_DIR,
+        runner: {
+          async run(cmd, args) {
+            throw new Error(`Unexpected subprocess in dryRun: ${cmd} ${args.join(' ')}`);
+          },
+        },
+      });
+      expect(result?.dryRun).toBe(true);
+    }
+  });
 });
