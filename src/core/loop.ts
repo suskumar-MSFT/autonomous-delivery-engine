@@ -178,22 +178,38 @@ export async function runOnce(opts: RunOnceOptions): Promise<RunOnceResult> {
     claimOwnerInFile(stateDir, selected.id, 'bot');
   }
 
-  // ── 3. Run builder ────────────────────────────────────────────────────────
-  const result = await builderFn({
-    repo,
-    issueNumber: selected.ghNumber,
-    checkoutDir,
-    dryRun: !live,
-    runner,
-  });
+  // ── 3. Run builder (with ghost-lock guard) ───────────────────────────────
+  //    If builderFn throws, release the ownership claim so the unit remains
+  //    selectable on the next loop pass.  Release writes '' (empty), which
+  //    parseOwner maps back to '' so selectNextUnit sees owner==='' and
+  //    re-queues the item.  A non-empty sentinel like 'error' would pass
+  //    through parseOwner unchanged and permanently silence the item.
+  let result: BuilderResult;
+  try {
+    result = await builderFn({
+      repo,
+      issueNumber: selected.ghNumber,
+      checkoutDir,
+      dryRun: !live,
+      runner,
+    });
+  } catch (err) {
+    if (live) {
+      releaseOwnerInFile(stateDir, selected.id, '');
+    }
+    throw err;
+  }
 
   // ── 4. Dry-run early return ───────────────────────────────────────────────
   if (!live) {
     return { selected, result, mergeStatus: 'dry-run' };
   }
 
-  // ── 5. Live: no PR URL → builder did not open a PR ───────────────────────
+  // ── 5. Live: no PR URL → builder did not open a PR; release lock ─────────
+  //    Same ghost-lock concern as the throw path: owner='bot' with no PR URL
+  //    makes the item permanently unselectable.  Write '' to re-queue it.
   if (!result.prUrl) {
+    releaseOwnerInFile(stateDir, selected.id, '');
     return { selected, result, mergeStatus: 'no-pr' };
   }
 
