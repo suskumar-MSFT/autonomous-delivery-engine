@@ -15,7 +15,7 @@
  * Full implementation ships in M2-1 (in-process chaining story).
  */
 
-import type { BuilderOptions, BuilderResult } from '../agents/builder.js';
+import type { BuilderOptions, BuilderResult, CommandRunner } from '../agents/builder.js';
 import type { Reviewer } from './reviewer.js';
 
 // Re-export RunOnceResult so callers do not need a separate import.
@@ -35,6 +35,14 @@ export interface LoopRunnerOpts {
 
   /** Directory containing the state files (passed through to runOnce). */
   stateDir: string;
+
+  /**
+   * Injectable command runner (wraps execFile for subprocesses).
+   * Passed through to every `runOnce` call so CI-check and merge subprocesses
+   * are mockable in tests — not just the builder boundary.
+   * Default: `DefaultCommandRunner` (live subprocess).
+   */
+  runner?: CommandRunner;
 
   /**
    * When true, `runOnce` runs in live mode (dryRun:false).
