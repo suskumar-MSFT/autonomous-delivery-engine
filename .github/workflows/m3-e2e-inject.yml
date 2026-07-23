@@ -1,0 +1,21 @@
+name: M3 E2E Inject (deliberate failure)
+
+# Runs ONLY on branches named m3-e2e-inject* — deliberately fails so the M3-5
+# live E2E gate can exercise the monitor pipeline against a real CI failure.
+# This workflow is intentionally harmless: it does nothing except exit 1.
+# It MUST NOT run on main, on PRs, or on any feature branch.
+on:
+  push:
+    branches:
+      - 'm3-e2e-inject*'
+
+jobs:
+  inject-failure:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deliberate CI failure (M3 E2E gate sentinel)
+        run: |
+          echo "M3 E2E inject: this failure is expected."
+          echo "It is used by the M3-5 live E2E gate (tests/e2e/m3-live-gate.test.ts)"
+          echo "to exercise fetchFailedRuns → fileMonitorIssue → dispatchFix end-to-end."
+          exit 1
