@@ -99,7 +99,8 @@ export async function fetchFailedRuns(opts: CiWatcherOpts): Promise<MonitorEvent
     if (conclusion !== 'failure' && conclusion !== 'action_required') continue;
 
     const runId = String(run.databaseId);
-    const sha = run.headSha.length >= 7 ? run.headSha.slice(0, 7) : run.headSha;
+    const headSha = run.headSha ?? '';
+    const sha = headSha.length >= 7 ? headSha.slice(0, 7) : headSha;
 
     events.push({
       kind: 'ci-failure',
@@ -110,7 +111,7 @@ export async function fetchFailedRuns(opts: CiWatcherOpts): Promise<MonitorEvent
         '',
         `**Workflow:** ${run.name}`,
         `**Run ID:** ${runId}`,
-        `**Commit:** ${run.headSha}`,
+        `**Commit:** ${headSha}`,
         `**Conclusion:** ${run.conclusion ?? ''}`,
         `**Updated at:** ${run.updatedAt}`,
         '',

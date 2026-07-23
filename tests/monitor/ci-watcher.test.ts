@@ -252,6 +252,19 @@ describe('fetchFailedRuns — event shape', () => {
     expect(result).toHaveLength(1);
     expect(result[0].title).toContain('abc');
   });
+
+  it('handles headSha: null without throwing (returns event with empty sha)', async () => {
+    const run = { ...makeRun(), headSha: null };
+    const runner = makeRunner(JSON.stringify([run]));
+    await expect(fetchFailedRuns({ repo: 'owner/repo', runner })).resolves.toHaveLength(1);
+  });
+
+  it('handles missing headSha field without throwing', async () => {
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
+    const { headSha: _hs, ...runWithoutSha } = makeRun();
+    const runner = makeRunner(JSON.stringify([runWithoutSha]));
+    await expect(fetchFailedRuns({ repo: 'owner/repo', runner })).resolves.toHaveLength(1);
+  });
 });
 
 // ── gh argv / runner boundary ─────────────────────────────────────────────────
