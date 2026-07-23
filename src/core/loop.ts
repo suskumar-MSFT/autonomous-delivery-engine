@@ -178,14 +178,26 @@ export async function runOnce(opts: RunOnceOptions): Promise<RunOnceResult> {
     claimOwnerInFile(stateDir, selected.id, 'bot');
   }
 
-  // ── 3. Run builder ────────────────────────────────────────────────────────
-  const result = await builderFn({
-    repo,
-    issueNumber: selected.ghNumber,
-    checkoutDir,
-    dryRun: !live,
-    runner,
-  });
+  // ── 3. Run builder (with ghost-lock guard) ───────────────────────────────
+  //    If builderFn throws, release the ownership claim so the unit stays
+  //    selectable on the next loop pass rather than silently dead-locking.
+  //    The release uses 'error' as owner sentinel to distinguish a crash from
+  //    a normal in-progress claim.
+  let result: BuilderResult;
+  try {
+    result = await builderFn({
+      repo,
+      issueNumber: selected.ghNumber,
+      checkoutDir,
+      dryRun: !live,
+      runner,
+    });
+  } catch (err) {
+    if (live) {
+      releaseOwnerInFile(stateDir, selected.id, 'error');
+    }
+    throw err;
+  }
 
   // ── 4. Dry-run early return ───────────────────────────────────────────────
   if (!live) {
