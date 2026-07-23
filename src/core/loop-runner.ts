@@ -7,8 +7,9 @@
  *
  * **Safety contract:**
  * - dryRun/live mode propagates to every `runOnce` call — zero side-effects when live=false.
- * - Each unit claims ownership before work; on builder error the claim is
- *   released with an `'error'` sentinel so the item stays selectable.  No ghost locks.
+ * - Each unit claims ownership before work; on builder error or no-PR the
+ *   claim is released with `''` so `selectNextUnit` can re-queue the item.
+ *   No ghost locks.
  * - Wall-clock budget is checked BEFORE starting each unit, not during.
  * - `runLoop` never merges directly; it delegates to `runOnce` which enforces the done-bar.
  *

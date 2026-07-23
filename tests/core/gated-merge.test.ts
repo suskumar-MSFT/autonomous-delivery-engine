@@ -405,11 +405,11 @@ describe('gated merge — no PR', () => {
 });
 
 // ---------------------------------------------------------------------------
-// Ghost-lock guard — builder crash must release ownership
+// Ghost-lock guard — builder crash and no-pr must both release ownership
 // ---------------------------------------------------------------------------
 
 describe('ghost-lock guard', () => {
-  it('releases ownership (sentinel "error") when builderFn throws in live mode', async () => {
+  it('releases ownership (empty string) when builderFn throws in live mode', async () => {
     const stateDir = makeTmpStateDir();
 
     const throwingBuilder = async (_opts: BuilderOptions): Promise<BuilderResult> => {
@@ -427,7 +427,7 @@ describe('ghost-lock guard', () => {
       }),
     ).rejects.toThrow('builder crashed');
 
-    // Ownership must be released — item must NOT stay locked as 'bot'
+    // Ownership must be fully released (empty) so selectNextUnit re-queues item
     const after = readFileSync(join(stateDir, 'BACKLOG.md'), 'utf8');
     const row = after.split('\n').find(l => {
       const cells = l.split('|');
@@ -435,10 +435,68 @@ describe('ghost-lock guard', () => {
     });
     expect(row).toBeDefined();
     const owner = row!.split('|')[6].trim();
-    // Must NOT still be a live claim ('bot' with no qualifier)
-    expect(owner).not.toBe('bot');
-    // Should be the 'error' sentinel
-    expect(owner).toBe('error');
+    expect(owner).toBe(''); // empty → selectNextUnit will pick it up again
+  });
+
+  it('item is re-selectable after a builder crash (no ghost lock)', async () => {
+    // Verify re-selectability: after the crash, a second runOnce call must
+    // select the same item (owner was released back to '').
+    const stateDir = makeTmpStateDir();
+    let callCount = 0;
+
+    const crashThenSucceedBuilder = async (_opts: BuilderOptions): Promise<BuilderResult> => {
+      callCount++;
+      if (callCount === 1) throw new Error('builder crashed on first attempt');
+      // Second call succeeds but returns no PR (simplest non-throwing result)
+      return { branch: 'feat/issue-2', prUrl: null, implemented: false, testsPassed: false };
+    };
+
+    // First call: throws → ownership released
+    await expect(
+      runOnce({
+        repo: 'owner/repo',
+        checkoutDir: '/tmp/checkout',
+        stateDir,
+        runner: noCallRunner(),
+        builderFn: crashThenSucceedBuilder,
+        live: true,
+      }),
+    ).rejects.toThrow('builder crashed on first attempt');
+
+    // Second call: same item must be selected again (ghost lock resolved)
+    const { selected, mergeStatus } = await runOnce({
+      repo: 'owner/repo',
+      checkoutDir: '/tmp/checkout',
+      stateDir,
+      runner: noCallRunner(),
+      builderFn: crashThenSucceedBuilder,
+      live: true,
+    });
+    expect(selected?.id).toBe('M0-1');   // same item re-selected
+    expect(mergeStatus).toBe('no-pr');   // no PR URL → no-pr, not skipped
+  });
+
+  it('releases ownership when builder returns no PR URL (no-pr path)', async () => {
+    const stateDir = makeTmpStateDir();
+
+    await runOnce({
+      repo: 'owner/repo',
+      checkoutDir: '/tmp/checkout',
+      stateDir,
+      runner: noCallRunner(),
+      builderFn: mockBuilderFn(noprBuilderResult()),
+      live: true,
+    });
+
+    // After no-pr, item must not be locked as 'bot'
+    const after = readFileSync(join(stateDir, 'BACKLOG.md'), 'utf8');
+    const row = after.split('\n').find(l => {
+      const cells = l.split('|');
+      return cells.length > 1 && cells[1].trim() === 'M0-1';
+    });
+    expect(row).toBeDefined();
+    const owner = row!.split('|')[6].trim();
+    expect(owner).toBe(''); // released → re-selectable
   });
 
   it('does NOT release ownership in dryRun mode when builderFn throws (no file writes)', async () => {
