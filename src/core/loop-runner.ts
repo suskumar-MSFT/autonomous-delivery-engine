@@ -20,6 +20,8 @@ import type { BuilderOptions, BuilderResult, CommandRunner } from '../agents/bui
 import type { Reviewer } from './reviewer.js';
 import { runOnce } from './loop.js';
 import { runMonitor } from '../monitor/monitor.js';
+import { appendRunLog } from '../telemetry/run-log.js';
+import type { TelemetryOpts } from '../telemetry/run-log.js';
 
 // Re-export RunOnceResult so callers do not need a separate import.
 export type { RunOnceResult } from './loop.js';
@@ -97,6 +99,16 @@ export interface LoopRunnerOpts {
    * Default: false.
    */
   monitorEnabled?: boolean;
+
+  /**
+   * Telemetry options for recording this run to the JSONL run log.
+   * When `telemetry.enabled` is false (or `telemetry` is omitted), no log
+   * entry is written — safe for dry-run and test modes.
+   *
+   * The entry is written AFTER the loop completes (or on the error path),
+   * capturing the final `stoppedReason`, `unitsProcessed`, and `durationMs`.
+   */
+  telemetry?: TelemetryOpts;
 }
 
 /** Reason the loop stopped. */
@@ -226,5 +238,28 @@ export async function runLoop(opts: LoopRunnerOpts): Promise<LoopRunResult> {
     }
   }
 
-  return { unitsProcessed, results, stoppedReason, monitorErrors };
+  const loopResult: LoopRunResult = { unitsProcessed, results, stoppedReason, monitorErrors };
+
+  // ── Telemetry: append one JSONL entry after each runLoop invocation ────────
+  // Non-fatal: a write failure must never crash the loop.
+  if (opts.telemetry) {
+    const durationMs = nowFn() - startedAt;
+    try {
+      await appendRunLog(
+        {
+          timestamp: new Date(startedAt).toISOString(),
+          repo,
+          unitsProcessed,
+          stoppedReason,
+          durationMs,
+          monitorErrors,
+        },
+        opts.telemetry,
+      );
+    } catch {
+      // Silently swallow — telemetry must not crash the loop.
+    }
+  }
+
+  return loopResult;
 }

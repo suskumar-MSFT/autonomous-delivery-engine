@@ -6,8 +6,8 @@
  * by reading and filtering the log.
  *
  * **Module layout (M4 sub-stories):**
- *   M4-0: this file — types + `appendRunLog` / `readRunLog` stubs
- *   M4-1: full `appendRunLog` implementation (JSONL append, injectable FS + mkdirp)
+ *   M4-0: types + `appendRunLog` / `readRunLog` stubs
+ *   M4-1: full `appendRunLog` implementation (JSONL append, injectable FS + mkdirp) ← this story
  *
  * **Safety contract:**
  *   - `appendRunLog` is append-only; it never overwrites existing entries.
@@ -16,8 +16,7 @@
  *     in tests.
  *   - No subprocess calls — pure FS + clock.
  *
- * Implementation status: **SCAFFOLD** — types + stubs only (M4-0).
- * Full implementation lands in M4-1.
+ * Implementation status: **M4-1 COMPLETE** — `appendRunLog` fully implemented.
  */
 
 // ── RunLogEntry ───────────────────────────────────────────────────────────────
@@ -104,7 +103,7 @@ export interface TelemetryOpts {
   now?: () => number;
 }
 
-// ── appendRunLog stub (M4-0 scaffold — full impl in M4-1) ────────────────────
+// ── appendRunLog (M4-1 — full implementation) ────────────────────────────────
 
 /**
  * Appends one `RunLogEntry` as a JSONL line to `opts.logFile`.
@@ -115,6 +114,8 @@ export interface TelemetryOpts {
  *
  * When `opts.enabled` is false the call is a no-op (safe for dry-run mode).
  *
+ * **Safety:** append-only — never overwrites existing entries.
+ *
  * @param entry - The telemetry entry to append.
  * @param opts  - Telemetry configuration; see `TelemetryOpts`.
  */
@@ -122,9 +123,30 @@ export async function appendRunLog(
   entry: RunLogEntry,
   opts?: TelemetryOpts,
 ): Promise<void> {
-  // STUB — full implementation in M4-1.
-  void entry;
-  void opts;
+  const enabled = opts?.enabled ?? true;
+  if (!enabled) return;
+
+  const logFile = opts?.logFile ?? 'logs/run-log.jsonl';
+
+  const appendFileFn =
+    opts?.appendFile ??
+    (async (p: string, data: string) => {
+      const { appendFile } = await import('node:fs/promises');
+      await appendFile(p, data);
+    });
+
+  const mkdirpFn =
+    opts?.mkdirp ??
+    (async (dir: string) => {
+      const { mkdir } = await import('node:fs/promises');
+      await mkdir(dir, { recursive: true });
+    });
+
+  // Ensure parent directory exists before appending.
+  const { dirname } = await import('node:path');
+  await mkdirpFn(dirname(logFile));
+
+  await appendFileFn(logFile, JSON.stringify(entry) + '\n');
 }
 
 // ── readRunLog ────────────────────────────────────────────────────────────────

@@ -2,6 +2,7 @@
  * tests/core/loop-runner.test.ts
  *
  * Tests for M2-1: persistent `runLoop` (in-process chaining).
+ * M4-1: telemetry wiring — appendRunLog called after each runLoop invocation.
  *
  * All external boundaries are mocked — NO live gh/claude/npm/git in CI.
  * File I/O for live-path tests uses temporary directories so fixtures are
@@ -14,8 +15,9 @@
  *  - budget check fires BEFORE each new unit (injectable clock, deterministic)
  *  - live multi-unit: processes 2 distinct ready items in sequence
  *  - error path: unrecoverable runOnce error re-throws with loopResult attached
+ *  - M4-1 telemetry: appendRunLog called with correct entry after runLoop
  */
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, vi, afterEach } from 'vitest';
 import { mkdirSync, copyFileSync, rmSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -481,5 +483,121 @@ describe('runLoop — monitorEnabled pre-pass', () => {
     const runListCalls = calls.filter(c => c.includes('run') && c.includes('list'));
     expect(runListCalls).toHaveLength(0);
     expect(r.monitorErrors).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// M4-1 Telemetry wiring
+// ---------------------------------------------------------------------------
+
+describe('runLoop — telemetry wiring (M4-1)', () => {
+  it('calls appendFile with a JSONL entry when telemetry.enabled=true', async () => {
+    const written: Array<[string, string]> = [];
+    const appendFileMock = vi.fn().mockImplementation((p: string, data: string) => {
+      written.push([p, data]);
+      return Promise.resolve();
+    });
+    const mkdirpMock = vi.fn().mockResolvedValue(undefined);
+
+    const r = await runLoop({
+      repo: 'owner/repo',
+      checkoutDir: '/tmp/checkout',
+      stateDir: FIXTURES_STATE_DIR,
+      live: false,
+      maxUnits: 1,
+      telemetry: {
+        enabled: true,
+        logFile: 'logs/run-log.jsonl',
+        appendFile: appendFileMock,
+        mkdirp: mkdirpMock,
+      },
+    });
+
+    expect(appendFileMock).toHaveBeenCalledTimes(1);
+    const [path, data] = written[0]!;
+    expect(path).toBe('logs/run-log.jsonl');
+    const entry = JSON.parse(data.trimEnd()) as Record<string, unknown>;
+    expect(entry.repo).toBe('owner/repo');
+    expect(entry.stoppedReason).toBe(r.stoppedReason);
+    expect(entry.unitsProcessed).toBe(r.unitsProcessed);
+    expect(typeof entry.timestamp).toBe('string');
+    expect(typeof entry.durationMs).toBe('number');
+    expect(Array.isArray(entry.monitorErrors)).toBe(true);
+    expect(data.endsWith('\n')).toBe(true);
+  });
+
+  it('does NOT call appendFile when telemetry is omitted', async () => {
+    const appendFileMock = vi.fn().mockResolvedValue(undefined);
+    await runLoop({
+      repo: 'owner/repo',
+      checkoutDir: '/tmp/checkout',
+      stateDir: FIXTURES_STATE_DIR,
+      live: false,
+      maxUnits: 1,
+      // no telemetry key
+    });
+    expect(appendFileMock).not.toHaveBeenCalled();
+  });
+
+  it('does NOT call appendFile when telemetry.enabled=false', async () => {
+    const appendFileMock = vi.fn().mockResolvedValue(undefined);
+    const mkdirpMock = vi.fn().mockResolvedValue(undefined);
+    await runLoop({
+      repo: 'owner/repo',
+      checkoutDir: '/tmp/checkout',
+      stateDir: FIXTURES_STATE_DIR,
+      live: false,
+      maxUnits: 1,
+      telemetry: { enabled: false, appendFile: appendFileMock, mkdirp: mkdirpMock },
+    });
+    expect(appendFileMock).not.toHaveBeenCalled();
+  });
+
+  it('telemetry entry timestamp matches startedAt (injectable clock)', async () => {
+    const FIXED_START = 1_700_000_000_000;
+    let tick = 0;
+    const nowFn = () => FIXED_START + tick++ * 5_000;
+
+    const written: string[] = [];
+    const appendFileMock = vi.fn().mockImplementation((_p: string, data: string) => {
+      written.push(data);
+      return Promise.resolve();
+    });
+
+    await runLoop({
+      repo: 'owner/repo',
+      checkoutDir: '/tmp/checkout',
+      stateDir: FIXTURES_STATE_DIR,
+      live: false,
+      maxUnits: 1,
+      now: nowFn,
+      telemetry: {
+        enabled: true,
+        appendFile: appendFileMock,
+        mkdirp: vi.fn().mockResolvedValue(undefined),
+      },
+    });
+
+    expect(written).toHaveLength(1);
+    const entry = JSON.parse(written[0]!.trimEnd()) as Record<string, unknown>;
+    expect(entry.timestamp).toBe(new Date(FIXED_START).toISOString());
+  });
+
+  it('telemetry write failure is swallowed — runLoop still returns result', async () => {
+    const appendFileMock = vi.fn().mockRejectedValue(new Error('disk full'));
+    const mkdirpMock = vi.fn().mockResolvedValue(undefined);
+
+    const r = await runLoop({
+      repo: 'owner/repo',
+      checkoutDir: '/tmp/checkout',
+      stateDir: FIXTURES_STATE_DIR,
+      live: false,
+      maxUnits: 1,
+      telemetry: { enabled: true, appendFile: appendFileMock, mkdirp: mkdirpMock },
+    });
+
+    // Loop result is intact despite write failure
+    expect(r.stoppedReason).toBeDefined();
+    expect(typeof r.unitsProcessed).toBe('number');
   });
 });
