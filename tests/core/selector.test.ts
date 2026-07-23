@@ -10,6 +10,7 @@ function item(overrides: Partial<BacklogItem>): BacklogItem {
     type: 'story',
     status: 'ready',
     owner: '',
+    deps: [],
     ...overrides,
   };
 }

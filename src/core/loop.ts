@@ -11,6 +11,7 @@ import {
   type CommandRunner,
 } from '../agents/builder.js';
 import { claimOwnerInFile, releaseOwnerInFile } from '../state/owner.js';
+import { resolveBlockers, unblockItemsInFile } from '../state/unblock.js';
 import { getCIStatus, extractPrNumber } from '../github/checks.js';
 import type { Reviewer } from './reviewer.js';
 
@@ -166,7 +167,17 @@ export async function runOnce(opts: RunOnceOptions): Promise<RunOnceResult> {
   // ── 1. Read + parse backlog ───────────────────────────────────────────────
   const backlogMd = readFileSync(join(stateDir, 'BACKLOG.md'), 'utf8');
   const backlogItems = parseBacklog(backlogMd);
-  const selected = selectNextUnit(backlogItems);
+
+  // ── 1a. Self-unblocking pre-pass (M2-4) ──────────────────────────────────
+  //    Flip ⛔ blocked → ⬜ ready for any item whose deps are all ✅ done.
+  //    In live mode, write those status changes back to BACKLOG.md so the
+  //    state file stays consistent with what the selector sees.
+  //    In dry-run mode, resolve in-memory only (no file mutations).
+  if (live) {
+    unblockItemsInFile(stateDir, backlogItems);
+  }
+  const resolvedItems = resolveBlockers(backlogItems);
+  const selected = selectNextUnit(resolvedItems);
 
   if (!selected) {
     return { selected: undefined, result: null, mergeStatus: null };
