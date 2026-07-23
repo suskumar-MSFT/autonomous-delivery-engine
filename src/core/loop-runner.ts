@@ -1,5 +1,5 @@
 /**
- * loop-runner.ts — Persistent loop runner (M2-A scaffold)
+ * loop-runner.ts — Persistent loop runner (M2-A / M2-1)
  *
  * Exposes `runLoop`, a multi-unit variant of `runOnce` that processes ready
  * backlog units in sequence within a time/step budget.  This is the substrate
@@ -11,12 +11,12 @@
  * - Wall-clock budget is checked BEFORE starting each unit, not during.
  * - `runLoop` never merges directly; it delegates to `runOnce` which enforces the done-bar.
  *
- * Implementation status: **SCAFFOLD** — interface + types only.
- * Full implementation ships in M2-1 (in-process chaining story).
+ * Implementation status: **COMPLETE** — M2-1 in-process chaining implemented.
  */
 
 import type { BuilderOptions, BuilderResult, CommandRunner } from '../agents/builder.js';
 import type { Reviewer } from './reviewer.js';
+import { runOnce } from './loop.js';
 
 // Re-export RunOnceResult so callers do not need a separate import.
 export type { RunOnceResult } from './loop.js';
@@ -79,6 +79,13 @@ export interface LoopRunnerOpts {
    * Injectable clock for deterministic tests.  Default: `() => Date.now()`.
    */
   now?: () => number;
+
+  /**
+   * Injectable start timestamp (milliseconds since epoch) for deterministic
+   * budget tests.  When omitted, captured from `now()` at the top of `runLoop`.
+   * Mirrors the `startedAt` option on `RunOnceOptions`.
+   */
+  startedAt?: number;
 }
 
 /** Reason the loop stopped. */
@@ -101,23 +108,84 @@ export interface LoopRunResult {
 /**
  * Run the delivery loop for up to `opts.maxUnits` units within `opts.budgetMs`.
  *
- * M2-1 TODO: implement the while-loop body:
+ * Processing model (M2-1 in-process chaining):
+ *   - Budget is checked BEFORE starting each unit (a started unit runs to completion).
+ *   - Each iteration calls `runOnce` which owns the claim/build/gate/merge cycle.
+ *   - Loop exits on: no more ready units (`empty`), step cap (`cap`),
+ *     budget exhausted (`budget`), or an unrecoverable error (`error`).
  *
- *   const startedAt = opts.now?.() ?? Date.now();
- *   const now = opts.now ?? (() => Date.now());
- *   while (unitsProcessed < maxUnits && (now() - startedAt) < budgetMs) {
- *     const result = await runOnce({ ...opts });
- *     if (!result.selected) { stoppedReason = 'empty'; break; }
- *     results.push(result);
- *     unitsProcessed++;
- *   }
+ * **Safety contract:**
+ * - dryRun propagates through `live` → `runOnce` → builder; zero side-effects when live=false.
+ * - No subprocess calls are made when live is false/unset.
+ * - `runLoop` never merges directly — it delegates entirely to `runOnce`.
  *
- * Until M2-1, this function throws to make the scaffold-vs-live distinction explicit.
+ * @param opts - Loop configuration; see `LoopRunnerOpts`.
+ * @returns `LoopRunResult` with per-unit results and the stop reason.
  */
 export async function runLoop(opts: LoopRunnerOpts): Promise<LoopRunResult> {
-  void opts; // intentionally unused until M2-1
-  throw new Error(
-    'runLoop is not yet implemented — scaffold only (M2-0). ' +
-    'Implementation ships in M2-1 (in-process chaining).',
-  );
+  const {
+    repo,
+    checkoutDir,
+    stateDir,
+    runner,
+    live = false,
+    builderFn,
+    reviewer,
+    maxUnits = 2,
+    budgetMs = 14 * 60 * 1000, // 14 minutes default
+    now: nowFn = () => Date.now(),
+  } = opts;
+
+  const startedAt = opts.startedAt ?? nowFn();
+  const results: RunOnceResult[] = [];
+  let unitsProcessed = 0;
+  let stoppedReason: StopReason = 'empty';
+
+  while (unitsProcessed < maxUnits) {
+    // ── Budget check: BEFORE starting each new unit ─────────────────────────
+    if (nowFn() - startedAt >= budgetMs) {
+      stoppedReason = 'budget';
+      break;
+    }
+
+    let result: RunOnceResult;
+    try {
+      result = await runOnce({
+        repo,
+        checkoutDir,
+        stateDir,
+        runner,
+        live,
+        builderFn,
+        reviewer,
+        now: nowFn,
+      });
+    } catch (err) {
+      // Unrecoverable error (e.g. state file unreadable, invalid repo)
+      stoppedReason = 'error';
+      // Re-throw so callers can observe the error, but only after we've
+      // set stoppedReason.  We return the partial results alongside the throw
+      // by wrapping in a structured error.
+      throw Object.assign(err instanceof Error ? err : new Error(String(err)), {
+        loopResult: { unitsProcessed, results, stoppedReason } satisfies LoopRunResult,
+      });
+    }
+
+    // ── No ready unit — backlog exhausted ────────────────────────────────────
+    if (!result.selected) {
+      stoppedReason = 'empty';
+      break;
+    }
+
+    results.push(result);
+    unitsProcessed++;
+
+    // ── Step cap reached ─────────────────────────────────────────────────────
+    if (unitsProcessed >= maxUnits) {
+      stoppedReason = 'cap';
+      break;
+    }
+  }
+
+  return { unitsProcessed, results, stoppedReason };
 }
