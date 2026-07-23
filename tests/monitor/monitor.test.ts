@@ -273,6 +273,7 @@ describe('runMonitor (M3-4 implementation) — one failure, new issue (live)', (
       runner: makeFullRunner([makeFailedRun()], [], ISSUE_URL),
       writeFile: vi.fn().mockResolvedValue(undefined),
       mkdirp: vi.fn().mockResolvedValue(undefined),
+      statFile: vi.fn().mockRejectedValue(new Error('ENOENT')), // no result file → dispatch
       now: () => new Date('2026-07-23T12:00:00Z').getTime(),
     };
   }
@@ -349,6 +350,8 @@ describe('runMonitor (M3-4 implementation) — already-existing issue', () => {
     const existingIssues = [{ number: 55, title: '[CI] build-and-test failed on abc1234 (run 99001)' }];
     const writeFile = vi.fn().mockResolvedValue(undefined);
     const mkdirp = vi.fn().mockResolvedValue(undefined);
+    // statFile throws → result file absent → dispatch proceeds
+    const statFile = vi.fn().mockRejectedValue(new Error('ENOENT'));
     const result = await runMonitor({
       repo: 'owner/repo',
       checkoutDir: '/tmp/engine',
@@ -356,9 +359,10 @@ describe('runMonitor (M3-4 implementation) — already-existing issue', () => {
       runner: makeFullRunner([makeFailedRun()], existingIssues),
       writeFile,
       mkdirp,
+      statFile,
     });
     expect(result.issuesFiledOrExisting).toContain(55);
-    // fix still dispatched for existing issue
+    // fix still dispatched for existing issue (no result file yet)
     expect(result.workOrdersDispatched).toHaveLength(1);
   });
 
@@ -373,9 +377,64 @@ describe('runMonitor (M3-4 implementation) — already-existing issue', () => {
       runner,
       writeFile: vi.fn().mockResolvedValue(undefined),
       mkdirp: vi.fn().mockResolvedValue(undefined),
+      statFile: vi.fn().mockRejectedValue(new Error('ENOENT')),
     });
     const createCall = mock.mock.calls.find((c: string[][]) => c[1].includes('create'));
     expect(createCall).toBeUndefined();
+  });
+});
+
+describe('runMonitor (M3-4 implementation) — idempotency guard (result file exists)', () => {
+  it('skips dispatchFix when result file already exists (fix already fulfilled)', async () => {
+    const writeFile = vi.fn().mockResolvedValue(undefined);
+    // statFile resolves → result file exists → skip dispatch
+    const statFile = vi.fn().mockResolvedValue(undefined);
+    const result = await runMonitor({
+      repo: 'owner/repo',
+      checkoutDir: '/tmp/engine',
+      dryRun: false,
+      runner: makeFullRunner([makeFailedRun()], [], 'https://github.com/owner/repo/issues/99'),
+      writeFile,
+      statFile,
+    });
+    expect(result.failuresDetected).toBe(1);
+    expect(result.issuesFiledOrExisting).toContain(99);
+    // dispatch skipped — result file existed
+    expect(result.workOrdersDispatched).toHaveLength(0);
+    expect(writeFile).not.toHaveBeenCalled();
+  });
+
+  it('statFile called with the result-file path for the issue', async () => {
+    const statFile = vi.fn().mockRejectedValue(new Error('ENOENT')); // absent
+    await runMonitor({
+      repo: 'owner/repo',
+      checkoutDir: '/tmp/engine',
+      dryRun: false,
+      runner: makeFullRunner([makeFailedRun()], [], 'https://github.com/owner/repo/issues/42'),
+      writeFile: vi.fn().mockResolvedValue(undefined),
+      mkdirp: vi.fn().mockResolvedValue(undefined),
+      statFile,
+    });
+    expect(statFile).toHaveBeenCalledOnce();
+    const calledPath = statFile.mock.calls[0][0] as string;
+    expect(calledPath).toContain('42');
+    expect(calledPath).toContain('.result.json');
+  });
+
+  it('custom workOrdersDir is used for the result file check', async () => {
+    const statFile = vi.fn().mockResolvedValue(undefined); // result exists → skip
+    await runMonitor({
+      repo: 'owner/repo',
+      checkoutDir: '/tmp/engine',
+      dryRun: false,
+      workOrdersDir: '/custom/orders',
+      runner: makeFullRunner([makeFailedRun()], [], 'https://github.com/owner/repo/issues/7'),
+      writeFile: vi.fn(),
+      statFile,
+    });
+    const calledPath = statFile.mock.calls[0][0] as string;
+    expect(calledPath).toContain('custom');
+    expect(calledPath).toContain('orders');
   });
 });
 
@@ -416,6 +475,7 @@ describe('runMonitor (M3-4 implementation) — error resilience', () => {
   it('dispatchFix error adds to errors[] but issue is still in issuesFiledOrExisting', async () => {
     const writeFile = vi.fn().mockRejectedValue(new Error('disk full'));
     const mkdirp = vi.fn().mockResolvedValue(undefined);
+    const statFile = vi.fn().mockRejectedValue(new Error('ENOENT')); // no result file → attempt dispatch
     const result = await runMonitor({
       repo: 'owner/repo',
       checkoutDir: '/tmp/engine',
@@ -423,6 +483,7 @@ describe('runMonitor (M3-4 implementation) — error resilience', () => {
       runner: makeFullRunner([makeFailedRun()], [], 'https://github.com/owner/repo/issues/88'),
       writeFile,
       mkdirp,
+      statFile,
     });
 
     expect(result.failuresDetected).toBe(1);
@@ -466,6 +527,7 @@ describe('runMonitor (M3-4 implementation) — error resilience', () => {
       runner,
       writeFile: vi.fn().mockResolvedValue(undefined),
       mkdirp: vi.fn().mockResolvedValue(undefined),
+      statFile: vi.fn().mockRejectedValue(new Error('ENOENT')),
     });
 
     expect(result.failuresDetected).toBe(2);
@@ -507,6 +569,7 @@ describe('runMonitor (M3-4 implementation) — multiple failures', () => {
       runner,
       writeFile: vi.fn().mockResolvedValue(undefined),
       mkdirp: vi.fn().mockResolvedValue(undefined),
+      statFile: vi.fn().mockRejectedValue(new Error('ENOENT')),
     });
 
     expect(result.failuresDetected).toBe(2);

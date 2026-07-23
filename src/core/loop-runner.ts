@@ -114,6 +114,13 @@ export interface LoopRunResult {
   results: RunOnceResult[];
   /** Why the loop stopped. */
   stoppedReason: StopReason;
+  /**
+   * Non-fatal errors reported by the monitor pre-pass (empty array when
+   * `monitorEnabled` is false, or when the pass completed without errors).
+   * Propagated here so operators can observe monitor health without crashing
+   * the loop.
+   */
+  monitorErrors: string[];
 }
 
 /**
@@ -151,21 +158,25 @@ export async function runLoop(opts: LoopRunnerOpts): Promise<LoopRunResult> {
   const results: RunOnceResult[] = [];
   let unitsProcessed = 0;
   let stoppedReason: StopReason = 'empty';
+  let monitorErrors: string[] = [];
 
   // ── Monitor pre-pass (if enabled) ────────────────────────────────────────
   // Runs ONCE before the unit loop.  Non-fatal: any error is swallowed so
-  // the unit loop always gets a chance to run.
+  // the unit loop always gets a chance to run.  Errors are surfaced in
+  // `monitorErrors` on the returned LoopRunResult for operator visibility.
   if (opts.monitorEnabled) {
     try {
-      await runMonitor({
+      const monitorResult = await runMonitor({
         repo,
         checkoutDir,
         dryRun: !live,
         runner,
         now: nowFn,
       });
-    } catch {
-      // Monitor errors never abort the unit loop.
+      monitorErrors = monitorResult.errors;
+    } catch (err) {
+      // runMonitor itself threw (unexpected) — capture as a single error string.
+      monitorErrors = [err instanceof Error ? err.message : String(err)];
     }
   }
 
@@ -195,7 +206,7 @@ export async function runLoop(opts: LoopRunnerOpts): Promise<LoopRunResult> {
       // set stoppedReason.  We return the partial results alongside the throw
       // by wrapping in a structured error.
       throw Object.assign(err instanceof Error ? err : new Error(String(err)), {
-        loopResult: { unitsProcessed, results, stoppedReason } satisfies LoopRunResult,
+        loopResult: { unitsProcessed, results, stoppedReason, monitorErrors } satisfies LoopRunResult,
       });
     }
 
@@ -215,5 +226,5 @@ export async function runLoop(opts: LoopRunnerOpts): Promise<LoopRunResult> {
     }
   }
 
-  return { unitsProcessed, results, stoppedReason };
+  return { unitsProcessed, results, stoppedReason, monitorErrors };
 }

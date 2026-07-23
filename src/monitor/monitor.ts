@@ -26,6 +26,8 @@ import { DefaultCommandRunner } from '../agents/builder.js';
 import { fetchFailedRuns } from './ci-watcher.js';
 import { fileMonitorIssue } from './issue-filer.js';
 import { dispatchFix } from './fix-dispatcher.js';
+import { stat } from 'node:fs/promises';
+import { join } from 'node:path';
 
 // ── Shared MonitorEvent type ──────────────────────────────────────────────────
 
@@ -117,6 +119,21 @@ export interface MonitorOpts {
    * Default: `fs/promises` `mkdir` with `{ recursive: true }`.
    */
   mkdirp?: (dir: string) => Promise<void>;
+
+  /**
+   * Directory where work-order files are written and result files are checked.
+   * Must match the value passed to `dispatchFix` / `WorkOrderBuilder`.
+   * Default: `"work-orders"` (relative to `process.cwd()`).
+   */
+  workOrdersDir?: string;
+
+  /**
+   * Injectable stat probe — resolves when the path exists, throws when absent.
+   * Used to check for `<issueNumber>.result.json` before re-dispatching a fix:
+   * if the fulfiller already completed the fix, the coordinator skips dispatch.
+   * Default: `fs/promises` `stat`.
+   */
+  statFile?: (path: string) => Promise<void>;
 }
 
 // ── runMonitor stub (M3-0 scaffold — full impl in M3-4) ──────────────────────
@@ -125,8 +142,11 @@ export interface MonitorOpts {
  * Run one monitor pass: poll CI, file issues for new failures, dispatch fix
  * work-orders.
  *
- * **M3-0 stub:** returns an empty result; real implementation lands in M3-4
- * after M3-1..M3-3 provide the sub-module implementations.
+ * **Idempotency guard:** before dispatching a fix for an issue, the coordinator
+ * checks for `<workOrdersDir>/<issueNumber>.result.json`.  If that file exists
+ * the fulfiller already completed the fix and re-dispatch is skipped.  This
+ * prevents unbounded re-dispatch cycles when a CI failure persists across
+ * multiple `runLoop` invocations while the fix is in-flight.
  *
  * @param opts - Monitor configuration; see `MonitorOpts`.
  * @returns `MonitorRunResult` summarising the pass.
@@ -137,6 +157,9 @@ export async function runMonitor(opts: MonitorOpts): Promise<MonitorRunResult> {
   const now = opts.now ?? (() => Date.now());
   const writeFileFn = opts.writeFile;
   const mkdirpFn = opts.mkdirp;
+  const workOrdersDir = opts.workOrdersDir ?? 'work-orders';
+  const statFileFn: (path: string) => Promise<void> =
+    opts.statFile ?? (async (p: string) => { await stat(p); });
 
   const result: MonitorRunResult = {
     failuresDetected: 0,
@@ -178,6 +201,17 @@ export async function runMonitor(opts: MonitorOpts): Promise<MonitorRunResult> {
     // Skip fix dispatch when there is no real issue number (dryRun + not found).
     if (issueNumber <= 0) continue;
 
+    // ── Idempotency guard: skip if the fulfiller already completed this fix ──
+    // The fulfiller writes `<issueNumber>.result.json` on completion.  If that
+    // file exists, re-dispatching would overwrite an in-flight or completed
+    // work-order — we leave it alone.
+    try {
+      await statFileFn(join(workOrdersDir, `${issueNumber}.result.json`));
+      continue; // result file exists → fix already fulfilled, skip dispatch
+    } catch {
+      // file absent → needs dispatch (fall through)
+    }
+
     // Dispatch a fix work-order (dryRun-guarded inside dispatchFix).
     try {
       const dispatched = await dispatchFix({
@@ -185,6 +219,7 @@ export async function runMonitor(opts: MonitorOpts): Promise<MonitorRunResult> {
         issueNumber,
         checkoutDir,
         dryRun,
+        workOrdersDir,
         writeFile: writeFileFn,
         mkdirp: mkdirpFn,
         now,
