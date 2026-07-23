@@ -15,6 +15,26 @@ import { getCIStatus, extractPrNumber } from '../github/checks.js';
 import type { Reviewer } from './reviewer.js';
 
 // ---------------------------------------------------------------------------
+// Repo validation — independent of builderFn (defense-in-depth, M1-5)
+// ---------------------------------------------------------------------------
+
+/** Must match owner/name — no shell metacharacters allowed. */
+const REPO_RE = /^[\w.-]+\/[\w.-]+$/;
+
+/**
+ * Validates the repo string before any network or subprocess call.
+ * Duplicated from builder.ts intentionally: runOnce must guard this
+ * regardless of which builderFn is injected.
+ */
+function validateRepo(repo: string): void {
+  if (!REPO_RE.test(repo)) {
+    throw new Error(
+      `Invalid repo "${repo}": expected "owner/name" format (letters, digits, hyphens, dots only)`,
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
 
@@ -122,7 +142,8 @@ export interface RunOnceResult {
  * All subprocess calls (gh, git, npm, claude) go through `runner`
  * (CommandRunner).  Inject a mock in tests — no live network in CI.
  *
- * Security: repo string is validated by `runBuilder` (REPO_RE).
+ * Security: repo is validated via REPO_RE at the top of `runOnce` (M1-5),
+ * independently of whichever builderFn is injected.
  * All gh/git calls use execFile argv form — no shell interpolation.
  */
 export async function runOnce(opts: RunOnceOptions): Promise<RunOnceResult> {
@@ -138,6 +159,9 @@ export async function runOnce(opts: RunOnceOptions): Promise<RunOnceResult> {
   } = opts;
   const startedAt = opts.startedAt ?? now();
   const capMs = opts.cap?.capMs ?? DEFAULT_CAP_MS;
+
+  // ── 0. Validate repo (defense-in-depth — independent of builderFn) ────────
+  validateRepo(repo);
 
   // ── 1. Read + parse backlog ───────────────────────────────────────────────
   const backlogMd = readFileSync(join(stateDir, 'BACKLOG.md'), 'utf8');
