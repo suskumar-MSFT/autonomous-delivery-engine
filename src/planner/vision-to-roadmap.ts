@@ -135,8 +135,8 @@ export async function createGitHubMilestones(
       'api',
       `repos/${repo}/milestones`,
       '--method', 'POST',
-      '--field', `title=${m.title}`,
-      '--field', `description=${m.description}`,
+      '--raw-field', `title=${m.title}`,
+      '--raw-field', `description=${m.description}`,
     ]);
   }
 }
