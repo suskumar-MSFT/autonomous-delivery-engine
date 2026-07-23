@@ -369,3 +369,110 @@ describe('runLoop — error handling', () => {
     expect(errWithResult.loopResult?.unitsProcessed).toBe(1);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Monitor pre-pass (monitorEnabled)
+// ---------------------------------------------------------------------------
+
+describe('runLoop — monitorEnabled pre-pass', () => {
+  /** Runner that records which gh sub-commands are called. */
+  function recordingRunner(): { runner: CommandRunner; calls: string[][] } {
+    const calls: string[][] = [];
+    const runner: CommandRunner = {
+      async run(cmd: string, args: string[]): Promise<RunResult> {
+        calls.push([cmd, ...args]);
+        // respond to gh run list (monitor pre-pass)
+        if (cmd === 'gh' && args.includes('run') && args.includes('list')) {
+          return { stdout: '[]', stderr: '', code: 0 };
+        }
+        // default: success (covers any other calls from runOnce in dryRun)
+        return { stdout: '', stderr: '', code: 0 };
+      },
+    };
+    return { runner, calls };
+  }
+
+  it('monitorEnabled=false (default): runner not called for gh run list', async () => {
+    const { runner, calls } = recordingRunner();
+    await runLoop({
+      repo: 'owner/repo',
+      checkoutDir: '/tmp/checkout',
+      stateDir: FIXTURES_STATE_DIR,
+      runner,
+      live: false,
+      maxUnits: 1,
+      monitorEnabled: false,
+    });
+    const runListCalls = calls.filter(c => c.includes('run') && c.includes('list'));
+    expect(runListCalls).toHaveLength(0);
+  });
+
+  it('monitorEnabled=true: runner called for gh run list before unit loop', async () => {
+    const { runner, calls } = recordingRunner();
+    await runLoop({
+      repo: 'owner/repo',
+      checkoutDir: '/tmp/checkout',
+      stateDir: FIXTURES_STATE_DIR,
+      runner,
+      live: false,
+      maxUnits: 1,
+      monitorEnabled: true,
+    });
+    const runListCalls = calls.filter(c => c.includes('run') && c.includes('list'));
+    expect(runListCalls).toHaveLength(1);
+  });
+
+  it('monitorEnabled=true with no failures: unit loop still runs normally', async () => {
+    const { runner } = recordingRunner();
+    const r = await runLoop({
+      repo: 'owner/repo',
+      checkoutDir: '/tmp/checkout',
+      stateDir: FIXTURES_STATE_DIR,
+      runner,
+      live: false,
+      maxUnits: 1,
+      monitorEnabled: true,
+    });
+    expect(r.unitsProcessed).toBe(1);
+    expect(r.results[0].mergeStatus).toBe('dry-run');
+  });
+
+  it('monitor pre-pass error is non-fatal: unit loop continues', async () => {
+    // Provide a runner that throws on gh run list (simulates monitor blowup).
+    const faultyRunner: CommandRunner = {
+      async run(_cmd: string, args: string[]): Promise<RunResult> {
+        if (args.includes('run') && args.includes('list')) {
+          throw new Error('monitor exploded');
+        }
+        return { stdout: '', stderr: '', code: 0 };
+      },
+    };
+    const r = await runLoop({
+      repo: 'owner/repo',
+      checkoutDir: '/tmp/checkout',
+      stateDir: FIXTURES_STATE_DIR,
+      runner: faultyRunner,
+      live: false,
+      maxUnits: 1,
+      monitorEnabled: true,
+    });
+    // Unit loop ran despite monitor failure
+    expect(r.unitsProcessed).toBe(1);
+    expect(r.results[0].mergeStatus).toBe('dry-run');
+  });
+
+  it('monitorEnabled not set (undefined): runner not called for gh run list', async () => {
+    const { runner, calls } = recordingRunner();
+    await runLoop({
+      repo: 'owner/repo',
+      checkoutDir: '/tmp/checkout',
+      stateDir: FIXTURES_STATE_DIR,
+      runner,
+      live: false,
+      maxUnits: 1,
+      // monitorEnabled omitted — defaults to false
+    });
+    const runListCalls = calls.filter(c => c.includes('run') && c.includes('list'));
+    expect(runListCalls).toHaveLength(0);
+  });
+});

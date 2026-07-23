@@ -22,6 +22,10 @@
  */
 
 import type { CommandRunner } from '../agents/builder.js';
+import { DefaultCommandRunner } from '../agents/builder.js';
+import { fetchFailedRuns } from './ci-watcher.js';
+import { fileMonitorIssue } from './issue-filer.js';
+import { dispatchFix } from './fix-dispatcher.js';
 
 // ── Shared MonitorEvent type ──────────────────────────────────────────────────
 
@@ -107,6 +111,12 @@ export interface MonitorOpts {
    * Number of recent workflow runs to scan for failures.  Default: 10.
    */
   lookback?: number;
+
+  /**
+   * Injectable mkdirp (recursive mkdir) passed to the fix dispatcher.
+   * Default: `fs/promises` `mkdir` with `{ recursive: true }`.
+   */
+  mkdirp?: (dir: string) => Promise<void>;
 }
 
 // ── runMonitor stub (M3-0 scaffold — full impl in M3-4) ──────────────────────
@@ -122,16 +132,72 @@ export interface MonitorOpts {
  * @returns `MonitorRunResult` summarising the pass.
  */
 export async function runMonitor(opts: MonitorOpts): Promise<MonitorRunResult> {
-  // M3-0 scaffold — no-op stub.
-  // M3-4 will replace this body with:
-  //   1. fetchFailedRuns (ci-watcher) → MonitorEvent[]
-  //   2. fileMonitorIssue (issue-filer) for each new event → IssueFiledResult[]
-  //   3. dispatchFix (fix-dispatcher) for each filed issue → FixDispatchResult[]
-  void opts; // suppress unused-param lint until M3-4
-  return {
+  const { repo, checkoutDir, dryRun = true, lookback } = opts;
+  const runner: CommandRunner = opts.runner ?? new DefaultCommandRunner();
+  const now = opts.now ?? (() => Date.now());
+  const writeFileFn = opts.writeFile;
+  const mkdirpFn = opts.mkdirp;
+
+  const result: MonitorRunResult = {
     failuresDetected: 0,
     issuesFiledOrExisting: [],
     workOrdersDispatched: [],
     errors: [],
   };
+
+  // ── Step 1: Fetch failed CI runs (read-only; always runs regardless of dryRun) ──
+  let events: MonitorEvent[];
+  try {
+    events = await fetchFailedRuns({ repo, runner, lookback, now });
+  } catch (err) {
+    result.errors.push(
+      `fetchFailedRuns: ${err instanceof Error ? err.message : String(err)}`,
+    );
+    return result;
+  }
+
+  result.failuresDetected = events.length;
+
+  // ── Step 2: For each event, file an issue then dispatch a fix work-order ───
+  for (const event of events) {
+    // File the issue (search-before-create; dryRun skips create).
+    let issueNumber = 0;
+    try {
+      const filed = await fileMonitorIssue({ repo, event, dryRun, runner });
+      issueNumber = filed.issueNumber;
+      if (issueNumber > 0) {
+        result.issuesFiledOrExisting.push(issueNumber);
+      }
+    } catch (err) {
+      result.errors.push(
+        `fileMonitorIssue(${event.sourceId}): ${err instanceof Error ? err.message : String(err)}`,
+      );
+      continue; // skip fix dispatch for this event
+    }
+
+    // Skip fix dispatch when there is no real issue number (dryRun + not found).
+    if (issueNumber <= 0) continue;
+
+    // Dispatch a fix work-order (dryRun-guarded inside dispatchFix).
+    try {
+      const dispatched = await dispatchFix({
+        repo,
+        issueNumber,
+        checkoutDir,
+        dryRun,
+        writeFile: writeFileFn,
+        mkdirp: mkdirpFn,
+        now,
+      });
+      if (dispatched.workOrderPath !== null) {
+        result.workOrdersDispatched.push(dispatched.workOrderPath);
+      }
+    } catch (err) {
+      result.errors.push(
+        `dispatchFix(${issueNumber}): ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  }
+
+  return result;
 }

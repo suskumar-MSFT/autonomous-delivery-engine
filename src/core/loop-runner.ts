@@ -19,6 +19,7 @@
 import type { BuilderOptions, BuilderResult, CommandRunner } from '../agents/builder.js';
 import type { Reviewer } from './reviewer.js';
 import { runOnce } from './loop.js';
+import { runMonitor } from '../monitor/monitor.js';
 
 // Re-export RunOnceResult so callers do not need a separate import.
 export type { RunOnceResult } from './loop.js';
@@ -88,6 +89,14 @@ export interface LoopRunnerOpts {
    * Mirrors the `startedAt` option on `RunOnceOptions`.
    */
   startedAt?: number;
+
+  /**
+   * When true, a `runMonitor` pre-pass runs once at the start of `runLoop`,
+   * before the unit-processing loop begins.  CI polling is always read-only;
+   * the monitor respects the same `dryRun` / `live` flag as the unit loop.
+   * Default: false.
+   */
+  monitorEnabled?: boolean;
 }
 
 /** Reason the loop stopped. */
@@ -142,6 +151,23 @@ export async function runLoop(opts: LoopRunnerOpts): Promise<LoopRunResult> {
   const results: RunOnceResult[] = [];
   let unitsProcessed = 0;
   let stoppedReason: StopReason = 'empty';
+
+  // ── Monitor pre-pass (if enabled) ────────────────────────────────────────
+  // Runs ONCE before the unit loop.  Non-fatal: any error is swallowed so
+  // the unit loop always gets a chance to run.
+  if (opts.monitorEnabled) {
+    try {
+      await runMonitor({
+        repo,
+        checkoutDir,
+        dryRun: !live,
+        runner,
+        now: nowFn,
+      });
+    } catch {
+      // Monitor errors never abort the unit loop.
+    }
+  }
 
   while (unitsProcessed < maxUnits) {
     // ── Budget check: BEFORE starting each new unit ─────────────────────────
