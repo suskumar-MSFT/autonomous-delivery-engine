@@ -96,6 +96,16 @@ describe('runMonitor (M3-0 stub)', () => {
     expect(runner).not.toHaveBeenCalled();
   });
 
+  it('never invokes the injectable writeFile (stub is a no-op)', async () => {
+    const writeFile = vi.fn();
+    await runMonitor({
+      repo: 'suskumar-MSFT/autonomous-delivery-engine',
+      checkoutDir: '/tmp/engine',
+      writeFile: writeFile as unknown as MonitorOpts['writeFile'],
+    });
+    expect(writeFile).not.toHaveBeenCalled();
+  });
+
   it('accepts injectable now() without error', async () => {
     const now = vi.fn(() => Date.now());
     const result = await runMonitor({

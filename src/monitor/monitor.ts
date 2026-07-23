@@ -93,6 +93,12 @@ export interface MonitorOpts {
   runner?: CommandRunner;
 
   /**
+   * Injectable file writer for work-order writes (used by the fix dispatcher in M3-3).
+   * Default: `fs.writeFile` (live filesystem write).
+   */
+  writeFile?: (path: string, data: string) => Promise<void>;
+
+  /**
    * Injectable clock for deterministic tests.  Default: `() => Date.now()`.
    */
   now?: () => number;
