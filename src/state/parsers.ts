@@ -14,6 +14,12 @@ export interface BacklogItem {
   type: 'story' | 'task' | 'bug' | 'spike' | 'epic';
   status: 'planned' | 'ready' | 'in-progress' | 'in-review' | 'done' | 'blocked';
   owner: string;
+  /**
+   * Machine-readable dependency IDs parsed from the Notes column.
+   * Populated when the Notes cell contains `deps: X,Y,Z`.
+   * Empty array when absent or no Notes column.
+   */
+  deps: string[];
 }
 
 export interface ProjectState {
@@ -61,6 +67,26 @@ function parseOwner(raw: string): string {
   const s = raw.trim();
   if (!s || s === '\u2014' || s === '-') return '';
   return s;
+}
+
+/**
+ * Parses a machine-readable deps list from a BACKLOG Notes cell.
+ * Recognises the pattern "deps: X, Y, Z" (case-insensitive, optional spaces).
+ * IDs are comma-separated; each is trimmed.
+ * Stops at any character that is not alphanumeric, hyphen, or dot (e.g. space or period
+ * ending a sentence), so trailing prose like ". ADR-022." is not captured.
+ * Returns [] when no deps annotation is present.
+ */
+export function parseDeps(notes: string): string[] {
+  // Each ID: word chars + hyphens, with optional internal dots (e.g. M2.1).
+  // A dot must be followed by another word char (prevents trailing-dot capture).
+  const ID = '[\\w-]+(?:\\.[\\w-]+)*';
+  const m = notes.match(new RegExp(`\\bdeps:\\s*(${ID}(?:\\s*,\\s*${ID})*)`, 'i'));
+  if (!m) return [];
+  return m[1]
+    .split(',')
+    .map(s => s.trim())
+    .filter(s => s.length > 0);
 }
 
 // Markdown table helpers
@@ -161,6 +187,7 @@ export function parseBacklog(md: string): BacklogItem[] {
     const [idRaw, ghRaw, title, typeRaw, statusRaw, ownerRaw] = cols;
     const id = idRaw.trim();
     if (!id) continue;
+    const deps = cols[6] ? parseDeps(cols[6]) : [];
     items.push({
       id,
       ghNumber: parseGhNumber(ghRaw),
@@ -168,6 +195,7 @@ export function parseBacklog(md: string): BacklogItem[] {
       type: mapItemType(typeRaw),
       status: mapItemStatus(statusRaw),
       owner: parseOwner(ownerRaw),
+      deps,
     });
   }
 
