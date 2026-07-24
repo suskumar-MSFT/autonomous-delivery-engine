@@ -600,4 +600,36 @@ describe('runLoop — telemetry wiring (M4-1)', () => {
     expect(r.stoppedReason).toBeDefined();
     expect(typeof r.unitsProcessed).toBe('number');
   });
+
+  it('telemetry written on error path (stoppedReason=error) before re-throw', async () => {
+    const written: string[] = [];
+    const appendFileMock = vi.fn().mockImplementation((_p: string, data: string) => {
+      written.push(data);
+      return Promise.resolve();
+    });
+    const mkdirpMock = vi.fn().mockResolvedValue(undefined);
+
+    let thrown: unknown = null;
+    try {
+      await runLoop({
+        repo: 'not-valid!!',   // invalid repo — runOnce throws immediately
+        checkoutDir: '/tmp/checkout',
+        stateDir: FIXTURES_STATE_DIR,
+        live: false,
+        maxUnits: 1,
+        telemetry: { enabled: true, appendFile: appendFileMock, mkdirp: mkdirpMock },
+      });
+    } catch (err) {
+      thrown = err;
+    }
+
+    // The error was re-thrown
+    expect(thrown).not.toBeNull();
+    expect(thrown).toBeInstanceOf(Error);
+    // AND the telemetry entry was still written
+    expect(appendFileMock).toHaveBeenCalledTimes(1);
+    const entry = JSON.parse(written[0]!.trimEnd()) as Record<string, unknown>;
+    expect(entry.stoppedReason).toBe('error');
+    expect(entry.unitsProcessed).toBe(0);
+  });
 });

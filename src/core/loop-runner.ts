@@ -192,6 +192,27 @@ export async function runLoop(opts: LoopRunnerOpts): Promise<LoopRunResult> {
     }
   }
 
+  // ── Shared telemetry writer (called on normal AND error paths) ───────────
+  const writeTelemetry = async (reason: StopReason, units: number): Promise<void> => {
+    if (!opts.telemetry) return;
+    const durationMs = nowFn() - startedAt;
+    try {
+      await appendRunLog(
+        {
+          timestamp: new Date(startedAt).toISOString(),
+          repo,
+          unitsProcessed: units,
+          stoppedReason: reason,
+          durationMs,
+          monitorErrors,
+        },
+        opts.telemetry,
+      );
+    } catch {
+      // Silently swallow — telemetry must never crash the loop.
+    }
+  };
+
   while (unitsProcessed < maxUnits) {
     // ── Budget check: BEFORE starting each new unit ─────────────────────────
     if (nowFn() - startedAt >= budgetMs) {
@@ -214,6 +235,8 @@ export async function runLoop(opts: LoopRunnerOpts): Promise<LoopRunResult> {
     } catch (err) {
       // Unrecoverable error (e.g. state file unreadable, invalid repo)
       stoppedReason = 'error';
+      // Write telemetry BEFORE re-throwing so the error run is logged.
+      await writeTelemetry(stoppedReason, unitsProcessed);
       // Re-throw so callers can observe the error, but only after we've
       // set stoppedReason.  We return the partial results alongside the throw
       // by wrapping in a structured error.
@@ -240,26 +263,8 @@ export async function runLoop(opts: LoopRunnerOpts): Promise<LoopRunResult> {
 
   const loopResult: LoopRunResult = { unitsProcessed, results, stoppedReason, monitorErrors };
 
-  // ── Telemetry: append one JSONL entry after each runLoop invocation ────────
-  // Non-fatal: a write failure must never crash the loop.
-  if (opts.telemetry) {
-    const durationMs = nowFn() - startedAt;
-    try {
-      await appendRunLog(
-        {
-          timestamp: new Date(startedAt).toISOString(),
-          repo,
-          unitsProcessed,
-          stoppedReason,
-          durationMs,
-          monitorErrors,
-        },
-        opts.telemetry,
-      );
-    } catch {
-      // Silently swallow — telemetry must not crash the loop.
-    }
-  }
+  // ── Telemetry: normal path ────────────────────────────────────────────────
+  await writeTelemetry(stoppedReason, unitsProcessed);
 
   return loopResult;
 }
