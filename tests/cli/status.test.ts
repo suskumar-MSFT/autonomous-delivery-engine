@@ -232,7 +232,8 @@ describe('getLoopStatus — custom paths', () => {
       readFile,
       now: TODAY_NOW,
     });
-    expect(readFile).toHaveBeenCalledWith('custom/PROJECT.md', 'utf-8');
+    // checkKillSwitch uses 'utf8' (no hyphen) — match the delegate's encoding
+    expect(readFile).toHaveBeenCalledWith('custom/PROJECT.md', 'utf8');
   });
 
   it('reads both files using the same readFile seam', async () => {

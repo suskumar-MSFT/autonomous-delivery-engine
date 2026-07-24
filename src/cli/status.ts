@@ -18,6 +18,7 @@
 
 import { readRunLog } from '../telemetry/run-log.js';
 import { countUnitsToday, utcDateString } from '../telemetry/daily-cap.js';
+import { checkKillSwitch } from '../core/kill-switch.js';
 
 // ── Injectable types ───────────────────────────────────────────────────────────
 
@@ -148,19 +149,10 @@ export async function getLoopStatus(opts?: StatusOpts): Promise<LoopStatus> {
   }
 
   // ── Read PROJECT.md for kill-switch ───────────────────────────────────────
-  let killSwitchActive = false;
-
-  try {
-    const projectContents = await readFileFn(projectFile, 'utf-8');
-    for (const line of projectContents.split('\n')) {
-      if (line.includes('LOOP PAUSED')) {
-        killSwitchActive = true;
-        break;
-      }
-    }
-  } catch {
-    // Missing or unreadable PROJECT.md → kill-switch not active (fail-open).
-  }
+  // Delegate to the authoritative checkKillSwitch (M4-2) so sentinel matching
+  // logic stays in one place and cannot drift.  checkKillSwitch is fail-open
+  // by contract (returns false on ENOENT/EACCES), so no try/catch needed here.
+  const killSwitchActive = await checkKillSwitch(projectFile, readFileFn);
 
   return {
     lastRunTime,
