@@ -144,13 +144,13 @@ describe('M4-5 Gate — kill-switch, telemetry, daily cap, status view', () => {
 
   it(
     'getLoopStatus returns correct LoopStatus from the persisted run log',
-    async () => {
+    async (ctx) => {
       // If scenario 2 failed, logFile will be absent — skip rather than
       // produce a misleading failure on getLoopStatus.
       const logExists = await stat(logFile).then(() => true).catch(() => false);
       if (!logExists) {
         console.warn('[M4-5 Scenario 3] logFile missing — scenario 2 must have failed; skipping.');
-        return;
+        ctx.skip();
       }
 
       // Use a far-future "now" so no log entries fall on "today" → unitsToday=0.
