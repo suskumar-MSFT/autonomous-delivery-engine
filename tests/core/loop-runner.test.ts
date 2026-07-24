@@ -762,3 +762,212 @@ describe('runLoop — kill-switch probe (M4-2)', () => {
     expect(entry.unitsProcessed).toBe(0);
   });
 });
+
+
+// ── M4-3: Daily-cap guard ──────────────────────────────────────────────────
+
+describe('M4-3 — daily-cap guard', () => {
+  // Fixed epoch for deterministic tests: 2026-07-23T15:00:00.000Z
+  // We inject both startedAt AND now: () => T_START so the budget check
+  // (nowFn() - startedAt) is always 0 ms — no accidental budget-fires.
+  const T_START = Date.UTC(2026, 6, 23, 15, 0, 0); // 2026-07-23T15:00:00Z
+  const frozenNow = () => T_START;
+  const TODAY = '2026-07-23'; // UTC date matching T_START
+  const YESTERDAY = '2026-07-22';
+
+  /** Builds JSONL content representing a run log with given units on `date`. */
+  function makeLogJsonl(unitsToday: number, date = TODAY): string {
+    if (unitsToday === 0) return '';
+    const entry = {
+      timestamp: `${date}T10:00:00.000Z`,
+      repo: 'owner/repo',
+      unitsProcessed: unitsToday,
+      stoppedReason: 'cap',
+      durationMs: 30_000,
+      monitorErrors: [],
+    };
+    return JSON.stringify(entry) + '\n';
+  }
+
+  it('stops with capped-daily when historical units today >= maxUnitsPerDay', async () => {
+    // 2 units already done today (persisted in log), cap = 2 → stop immediately.
+    const readFile = vi.fn().mockResolvedValue(makeLogJsonl(2));
+    const builderSpy = vi.fn();
+
+    const r = await runLoop({
+      ...dryRunOpts(FIXTURES_STATE_DIR),
+      startedAt: T_START,
+      now: frozenNow,
+      maxUnits: 5,
+      maxUnitsPerDay: 2,
+      dailyCapReadFile: readFile,
+      builderFn: builderSpy,
+    });
+
+    expect(r.stoppedReason).toBe('capped-daily');
+    expect(r.unitsProcessed).toBe(0);
+    expect(builderSpy).not.toHaveBeenCalled();
+  });
+
+  it('stops with capped-daily after processing one unit when historical=1 and cap=2', async () => {
+    // 1 unit already done today; cap = 2 → can process 1 more, then daily cap fires.
+    // Builder returns prUrl:null (dry-run style) so runOnce skips CI/merge steps
+    // and never invokes noCallRunner.
+    const readFile = vi.fn().mockResolvedValue(makeLogJsonl(1));
+    const dryBuilderSpy = vi.fn().mockResolvedValue({
+      branch: 'feat/issue-x',
+      prUrl: null,
+      implemented: true,
+      testsPassed: true,
+      dryRun: true as const,
+    });
+
+    const stateDir = makeTmpStateDir(FIXTURES_STATE_DIR);
+
+    const r = await runLoop({
+      ...dryRunOpts(stateDir),
+      startedAt: T_START,
+      now: frozenNow,
+      maxUnits: 5,
+      maxUnitsPerDay: 2,
+      dailyCapReadFile: readFile,
+      builderFn: dryBuilderSpy,
+    });
+
+    expect(r.unitsProcessed).toBe(1);
+    expect(r.stoppedReason).toBe('capped-daily');
+  });
+
+  it('does not apply the daily cap when maxUnitsPerDay is not set', async () => {
+    // No maxUnitsPerDay — log reader should never be called.
+    const readFile = vi.fn().mockResolvedValue(makeLogJsonl(999));
+
+    const r = await runLoop({
+      ...dryRunOpts(FIXTURES_STATE_DIR),
+      startedAt: T_START,
+      now: frozenNow,
+      maxUnits: 1,
+      dailyCapReadFile: readFile,
+      // no maxUnitsPerDay
+    });
+
+    expect(r.stoppedReason).not.toBe('capped-daily');
+    expect(readFile).not.toHaveBeenCalled();
+  });
+
+  it('is fail-open: continues normally when log file does not exist', async () => {
+    const readFile = vi.fn().mockRejectedValue(
+      Object.assign(new Error('ENOENT'), { code: 'ENOENT' }),
+    );
+
+    const r = await runLoop({
+      ...dryRunOpts(FIXTURES_STATE_DIR),
+      startedAt: T_START,
+      now: frozenNow,
+      maxUnits: 1,
+      maxUnitsPerDay: 10,
+      dailyCapReadFile: readFile,
+    });
+
+    // Log unreadable → assume 0 historical units → loop runs normally.
+    expect(r.stoppedReason).not.toBe('capped-daily');
+    expect(r.unitsProcessed).toBe(1);
+  });
+
+  it('is fail-open: continues normally when log read throws unexpectedly', async () => {
+    const readFile = vi.fn().mockRejectedValue(new Error('EACCES: permission denied'));
+
+    const r = await runLoop({
+      ...dryRunOpts(FIXTURES_STATE_DIR),
+      startedAt: T_START,
+      now: frozenNow,
+      maxUnits: 1,
+      maxUnitsPerDay: 10,
+      dailyCapReadFile: readFile,
+    });
+
+    expect(r.stoppedReason).not.toBe('capped-daily');
+    expect(r.unitsProcessed).toBe(1);
+  });
+
+  it('reads from telemetry.logFile when set', async () => {
+    const readFile = vi.fn().mockResolvedValue('');
+
+    await runLoop({
+      ...dryRunOpts(FIXTURES_STATE_DIR),
+      startedAt: T_START,
+      now: frozenNow,
+      maxUnits: 1,
+      maxUnitsPerDay: 10,
+      telemetry: {
+        logFile: 'custom/path/run-log.jsonl',
+        enabled: false,
+      },
+      dailyCapReadFile: readFile,
+    });
+
+    expect(readFile).toHaveBeenCalledWith('custom/path/run-log.jsonl', 'utf-8');
+  });
+
+  it('falls back to default log path when telemetry.logFile is not set', async () => {
+    const readFile = vi.fn().mockResolvedValue('');
+
+    await runLoop({
+      ...dryRunOpts(FIXTURES_STATE_DIR),
+      startedAt: T_START,
+      now: frozenNow,
+      maxUnits: 1,
+      maxUnitsPerDay: 10,
+      dailyCapReadFile: readFile,
+      // no telemetry option set
+    });
+
+    expect(readFile).toHaveBeenCalledWith('logs/run-log.jsonl', 'utf-8');
+  });
+
+  it('ignores log entries from a previous UTC day when evaluating the cap', async () => {
+    // All log entries are from yesterday — should not count toward today's cap.
+    const readFile = vi.fn().mockResolvedValue(makeLogJsonl(5, YESTERDAY));
+
+    const r = await runLoop({
+      ...dryRunOpts(FIXTURES_STATE_DIR),
+      startedAt: T_START,
+      now: frozenNow,
+      maxUnits: 1,
+      maxUnitsPerDay: 2,
+      dailyCapReadFile: readFile,
+    });
+
+    // Yesterday's 5 units don't count; today starts at 0 < cap of 2.
+    expect(r.stoppedReason).not.toBe('capped-daily');
+    expect(r.unitsProcessed).toBe(1);
+  });
+
+  it('telemetry captures stoppedReason=capped-daily when cap fires', async () => {
+    const capReadFile = vi.fn().mockResolvedValue(makeLogJsonl(3));
+    const written: string[] = [];
+    const appendFileMock = vi.fn().mockImplementation((_p: string, data: string) => {
+      written.push(data);
+      return Promise.resolve();
+    });
+
+    await runLoop({
+      ...dryRunOpts(FIXTURES_STATE_DIR),
+      startedAt: T_START,
+      now: frozenNow,
+      maxUnits: 5,
+      maxUnitsPerDay: 3,
+      dailyCapReadFile: capReadFile,
+      telemetry: {
+        enabled: true,
+        appendFile: appendFileMock,
+        mkdirp: vi.fn().mockResolvedValue(undefined),
+      },
+    });
+
+    expect(appendFileMock).toHaveBeenCalledTimes(1);
+    const entry = JSON.parse(written[0]!.trimEnd()) as Record<string, unknown>;
+    expect(entry.stoppedReason).toBe('capped-daily');
+    expect(entry.unitsProcessed).toBe(0);
+  });
+});
