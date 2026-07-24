@@ -24,6 +24,8 @@ import { appendRunLog } from '../telemetry/run-log.js';
 import type { TelemetryOpts } from '../telemetry/run-log.js';
 import { checkKillSwitch } from './kill-switch.js';
 import type { ReadFileFn } from './kill-switch.js';
+import { readDailyCount } from '../telemetry/daily-cap.js';
+import type { CapReadFileFn } from '../telemetry/daily-cap.js';
 import { join } from 'node:path';
 
 // Re-export RunOnceResult so callers do not need a separate import.
@@ -119,15 +121,37 @@ export interface LoopRunnerOpts {
    * Override in tests to inject PROJECT.md content without touching the disk.
    */
   killSwitchReadFile?: ReadFileFn;
+
+  /**
+   * Maximum number of units to process across ALL `runLoop` invocations in a
+   * single UTC calendar day.  Checked BEFORE starting each unit by reading the
+   * persisted JSONL run log (`telemetry.logFile`) and summing today's entries.
+   *
+   * When the ceiling is reached, `runLoop` stops with `StopReason: 'capped-daily'`.
+   * Default: no daily cap (unlimited).
+   *
+   * Requires `telemetry.logFile` (or the default `'logs/run-log.jsonl'`) to be
+   * readable for historical count to be non-zero.  Fail-open: if the log file
+   * is absent or unreadable, `readDailyCount` returns 0 and the loop continues.
+   */
+  maxUnitsPerDay?: number;
+
+  /**
+   * Injectable `readFile` seam for the daily-cap guard.
+   * When omitted, the live `fs/promises.readFile` is used.
+   * Override in tests to inject run-log JSONL content without touching the disk.
+   */
+  dailyCapReadFile?: CapReadFileFn;
 }
 
 /** Reason the loop stopped. */
 export type StopReason =
-  | 'empty'   // no more ready unowned units in the backlog
-  | 'cap'     // maxUnits reached
-  | 'budget'  // wall-clock budget exhausted before the next unit started
-  | 'killed'  // kill-switch sentinel detected in PROJECT.md (M4-2)
-  | 'error';  // unrecoverable error (e.g. state file unreadable)
+  | 'empty'         // no more ready unowned units in the backlog
+  | 'cap'           // maxUnits reached
+  | 'budget'        // wall-clock budget exhausted before the next unit started
+  | 'killed'        // kill-switch sentinel detected in PROJECT.md (M4-2)
+  | 'capped-daily'  // daily unit cap reached — units today >= maxUnitsPerDay (M4-3)
+  | 'error';        // unrecoverable error (e.g. state file unreadable)
 
 /** Result returned by `runLoop`. */
 export interface LoopRunResult {
@@ -183,6 +207,15 @@ export async function runLoop(opts: LoopRunnerOpts): Promise<LoopRunResult> {
   let stoppedReason: StopReason = 'empty';
   let monitorErrors: string[] = [];
 
+  // ── Daily-cap pre-read (M4-3) ─────────────────────────────────────────────
+  // Read the persisted run log ONCE at loop start to get historical unit count
+  // for today (UTC).  Fail-open: 0 if log is missing or unreadable.
+  let historicalUnitsToday = 0;
+  if (opts.maxUnitsPerDay !== undefined) {
+    const logFile = opts.telemetry?.logFile ?? 'logs/run-log.jsonl';
+    historicalUnitsToday = await readDailyCount(logFile, startedAt, opts.dailyCapReadFile);
+  }
+
   // ── Monitor pre-pass (if enabled) ────────────────────────────────────────
   // Runs ONCE before the unit loop.  Non-fatal: any error is swallowed so
   // the unit loop always gets a chance to run.  Errors are surfaced in
@@ -228,6 +261,17 @@ export async function runLoop(opts: LoopRunnerOpts): Promise<LoopRunResult> {
     // ── Budget check: BEFORE starting each new unit ─────────────────────────
     if (nowFn() - startedAt >= budgetMs) {
       stoppedReason = 'budget';
+      break;
+    }
+
+    // ── Daily-cap check: BEFORE starting each new unit (M4-3) ───────────────
+    // Compares persisted historical count (read once above) plus units already
+    // processed in this invocation against the per-day ceiling.
+    if (
+      opts.maxUnitsPerDay !== undefined &&
+      historicalUnitsToday + unitsProcessed >= opts.maxUnitsPerDay
+    ) {
+      stoppedReason = 'capped-daily';
       break;
     }
 
