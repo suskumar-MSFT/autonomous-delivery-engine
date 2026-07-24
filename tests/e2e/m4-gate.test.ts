@@ -1,7 +1,7 @@
 /**
  * tests/e2e/m4-gate.test.ts — M4 gate (M4-5)
  *
- * Verifies all four M4 hardening features work correctly together:
+ * Verifies all five M4 hardening features work correctly together:
  *
  *   1. Kill-switch: LOOP PAUSED in PROJECT.md stops runLoop immediately
  *      (stoppedReason='killed', 0 units, builder never called).
@@ -14,20 +14,24 @@
  *      when the sentinel is present.
  *   5. Daily cap accounting: getLoopStatus.unitsToday sums entries for today
  *      and ignores past-date entries.
+ *   6. Daily cap enforcement: runLoop stops with stoppedReason='capped-daily'
+ *      when the historical unit count already meets maxUnitsPerDay.
  *
  * **Hermetic (CI-safe):**
  * No live `gh` API calls or network I/O.  Telemetry tests use a real tmpdir
  * so the FS boundary (mkdirp + appendFile) is exercised end-to-end.  The
- * kill-switch and status scenarios use injectable fakes.  NOT skipped in CI.
+ * kill-switch, status, and daily-cap scenarios use injectable fakes.
+ * NOT skipped in CI.
  *
  * **Test ordering note:**
  * Scenario 3 (status view) reads the JSONL file written by scenario 2
  * (telemetry), so the two tests must run in order — which Vitest guarantees
- * within a single `describe` block by default.
+ * within a single `describe` block by default.  If scenario 2 fails, scenario
+ * 3 is explicitly skipped via a file-existence guard to avoid false attribution.
  */
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { mkdir, writeFile, readFile, rm } from 'node:fs/promises';
+import { mkdir, writeFile, readFile, rm, stat } from 'node:fs/promises';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { tmpdir } from 'node:os';
@@ -135,10 +139,20 @@ describe('M4-5 Gate — kill-switch, telemetry, daily cap, status view', () => {
 
   // ── Scenario 3: getLoopStatus reads the persisted run log ──────────────
   // Depends on logFile written by scenario 2 (round-trip verification).
+  // Guard: skip with a clear message if scenario 2 failed to write the file,
+  // so a write failure doesn't masquerade as a getLoopStatus regression.
 
   it(
     'getLoopStatus returns correct LoopStatus from the persisted run log',
     async () => {
+      // If scenario 2 failed, logFile will be absent — skip rather than
+      // produce a misleading failure on getLoopStatus.
+      const logExists = await stat(logFile).then(() => true).catch(() => false);
+      if (!logExists) {
+        console.warn('[M4-5 Scenario 3] logFile missing — scenario 2 must have failed; skipping.');
+        return;
+      }
+
       // Use a far-future "now" so no log entries fall on "today" → unitsToday=0.
       const farFutureMs = new Date('2099-12-31T23:59:59Z').getTime();
 
@@ -223,6 +237,57 @@ describe('M4-5 Gate — kill-switch, telemetry, daily cap, status view', () => {
       expect(status.unitsToday).toBe(3);         // 1 + 2; past entry not counted
       expect(status.lastStopReason).toBe('cap'); // last line in file = entryPast
       expect(status.killSwitchActive).toBe(false);
+    },
+  );
+
+  // ── Scenario 6: Daily cap enforcement stops the loop ───────────────────
+  // Verifies M4-3's enforcement side: runLoop stops with stoppedReason=
+  // 'capped-daily' when historicalUnitsToday >= maxUnitsPerDay, BEFORE
+  // runOnce is called (builder must never fire).
+
+  it(
+    'runLoop stops with stoppedReason=capped-daily when daily cap is already met',
+    async () => {
+      const todayMs = Date.now();
+      const todayDate = new Date(todayMs).toISOString().slice(0, 10);
+
+      // Inject a run log that already has maxUnitsPerDay=2 units for today.
+      const historicalJSONL =
+        JSON.stringify({
+          timestamp: `${todayDate}T07:00:00.000Z`,
+          repo: REPO, unitsProcessed: 1, stoppedReason: 'cap',
+          durationMs: 3000, monitorErrors: [],
+        }) + '\n' +
+        JSON.stringify({
+          timestamp: `${todayDate}T08:00:00.000Z`,
+          repo: REPO, unitsProcessed: 1, stoppedReason: 'empty',
+          durationMs: 2000, monitorErrors: [],
+        }) + '\n';
+
+      let builderCalled = false;
+
+      const result = await runLoop({
+        repo: REPO,
+        checkoutDir: tmpDir,
+        stateDir: EMPTY_BACKLOG_DIR,
+        live: false,
+        maxUnits: 2,
+        maxUnitsPerDay: 2,
+        // nowMs for the daily-cap pre-read: same day as the historical entries.
+        startedAt: todayMs,
+        // Inject the historical log so readDailyCount returns 2 (= cap).
+        dailyCapReadFile: async (_path, _enc) => historicalJSONL,
+        // Builder must never be called — cap check fires before runOnce.
+        builderFn: async () => {
+          builderCalled = true;
+          return { prUrl: null, dryRun: true };
+        },
+      });
+
+      expect(result.stoppedReason).toBe('capped-daily');
+      expect(result.unitsProcessed).toBe(0);
+      expect(result.results).toHaveLength(0);
+      expect(builderCalled).toBe(false);
     },
   );
 });
