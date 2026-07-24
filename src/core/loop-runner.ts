@@ -22,6 +22,9 @@ import { runOnce } from './loop.js';
 import { runMonitor } from '../monitor/monitor.js';
 import { appendRunLog } from '../telemetry/run-log.js';
 import type { TelemetryOpts } from '../telemetry/run-log.js';
+import { checkKillSwitch } from './kill-switch.js';
+import type { ReadFileFn } from './kill-switch.js';
+import { join } from 'node:path';
 
 // Re-export RunOnceResult so callers do not need a separate import.
 export type { RunOnceResult } from './loop.js';
@@ -109,6 +112,13 @@ export interface LoopRunnerOpts {
    * capturing the final `stoppedReason`, `unitsProcessed`, and `durationMs`.
    */
   telemetry?: TelemetryOpts;
+
+  /**
+   * Injectable `readFile` seam for the kill-switch probe.
+   * When omitted, the live `fs/promises.readFile` is used.
+   * Override in tests to inject PROJECT.md content without touching the disk.
+   */
+  killSwitchReadFile?: ReadFileFn;
 }
 
 /** Reason the loop stopped. */
@@ -116,6 +126,7 @@ export type StopReason =
   | 'empty'   // no more ready unowned units in the backlog
   | 'cap'     // maxUnits reached
   | 'budget'  // wall-clock budget exhausted before the next unit started
+  | 'killed'  // kill-switch sentinel detected in PROJECT.md (M4-2)
   | 'error';  // unrecoverable error (e.g. state file unreadable)
 
 /** Result returned by `runLoop`. */
@@ -218,6 +229,18 @@ export async function runLoop(opts: LoopRunnerOpts): Promise<LoopRunResult> {
     if (nowFn() - startedAt >= budgetMs) {
       stoppedReason = 'budget';
       break;
+    }
+
+    // ── Kill-switch probe: BEFORE starting each new unit ────────────────────
+    // Reads PROJECT.md for the `LOOP PAUSED` sentinel.  Fail-open: an
+    // unreadable file does NOT stop the loop.
+    {
+      const projectFile = join(stateDir, 'PROJECT.md');
+      const killed = await checkKillSwitch(projectFile, opts.killSwitchReadFile);
+      if (killed) {
+        stoppedReason = 'killed';
+        break;
+      }
     }
 
     let result: RunOnceResult;

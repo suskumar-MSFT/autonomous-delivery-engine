@@ -633,3 +633,132 @@ describe('runLoop — telemetry wiring (M4-1)', () => {
     expect(entry.unitsProcessed).toBe(0);
   });
 });
+
+// ---------------------------------------------------------------------------
+// M4-2 Kill-switch probe wiring
+// ---------------------------------------------------------------------------
+
+describe('runLoop — kill-switch probe (M4-2)', () => {
+  /** Returns a killSwitchReadFile mock that always returns the given content. */
+  function makeKillReader(content: string) {
+    return vi.fn().mockResolvedValue(content);
+  }
+
+  it('stops with stoppedReason=killed when PROJECT.md contains LOOP PAUSED', async () => {
+    const r = await runLoop({
+      ...dryRunOpts(FIXTURES_STATE_DIR),
+      maxUnits: 3,
+      killSwitchReadFile: makeKillReader('# PROJECT\n\nLOOP PAUSED\n'),
+    });
+    expect(r.stoppedReason).toBe('killed');
+    expect(r.unitsProcessed).toBe(0);
+    expect(r.results).toHaveLength(0);
+  });
+
+  it('kill-switch fires before the first unit (no units processed)', async () => {
+    const builderSpy = vi.fn().mockResolvedValue({
+      branch: 'feat/x',
+      prUrl: 'https://github.com/o/r/pull/1',
+      implemented: true,
+      testsPassed: true,
+    });
+    const r = await runLoop({
+      ...dryRunOpts(FIXTURES_STATE_DIR),
+      maxUnits: 2,
+      builderFn: builderSpy,
+      killSwitchReadFile: makeKillReader('LOOP PAUSED'),
+    });
+    expect(r.stoppedReason).toBe('killed');
+    expect(builderSpy).not.toHaveBeenCalled();
+  });
+
+  it('continues normally when PROJECT.md has no LOOP PAUSED', async () => {
+    const r = await runLoop({
+      ...dryRunOpts(FIXTURES_STATE_DIR),
+      maxUnits: 1,
+      killSwitchReadFile: makeKillReader('# PROJECT\n\n## Current phase\nActive\n'),
+    });
+    expect(r.stoppedReason).not.toBe('killed');
+    expect(r.unitsProcessed).toBe(1);
+  });
+
+  it('fail-open: continues when kill-switch readFile rejects (ENOENT)', async () => {
+    const errorReader = vi.fn().mockRejectedValue(
+      Object.assign(new Error('ENOENT'), { code: 'ENOENT' }),
+    );
+    const r = await runLoop({
+      ...dryRunOpts(FIXTURES_STATE_DIR),
+      maxUnits: 1,
+      killSwitchReadFile: errorReader,
+    });
+    // Loop should NOT be killed by an unreadable project file
+    expect(r.stoppedReason).not.toBe('killed');
+    expect(r.unitsProcessed).toBe(1);
+  });
+
+  it('kill-switch is checked before each unit, not just once', async () => {
+    // First call: no sentinel. Second call: sentinel present.
+    let callCount = 0;
+    const toggleReader = vi.fn().mockImplementation(async () => {
+      callCount++;
+      // Return sentinel on the second check (before unit 2).
+      return callCount >= 2 ? 'LOOP PAUSED' : '# PROJECT — no sentinel';
+    });
+
+    const r = await runLoop({
+      ...dryRunOpts(FIXTURES_STATE_DIR),
+      maxUnits: 3,
+      killSwitchReadFile: toggleReader,
+    });
+
+    // Unit 1 processed (kill-switch clear on check 1).
+    // Loop killed before unit 2 (kill-switch active on check 2).
+    expect(r.stoppedReason).toBe('killed');
+    expect(r.unitsProcessed).toBe(1);
+    expect(toggleReader).toHaveBeenCalledTimes(2);
+  });
+
+  it('kill-switch path is stateDir/PROJECT.md', async () => {
+    // Verify the injected reader is called with the expected path.
+    const capturedPaths: string[] = [];
+    const capturingReader = vi.fn().mockImplementation(async (p: string) => {
+      capturedPaths.push(p);
+      return '# no sentinel';
+    });
+
+    await runLoop({
+      ...dryRunOpts(FIXTURES_STATE_DIR),
+      maxUnits: 1,
+      killSwitchReadFile: capturingReader,
+    });
+
+    expect(capturedPaths.length).toBeGreaterThanOrEqual(1);
+    for (const p of capturedPaths) {
+      expect(p).toMatch(/PROJECT\.md$/);
+    }
+  });
+
+  it('telemetry captures stoppedReason=killed when kill-switch fires', async () => {
+    const written: string[] = [];
+    const appendFileMock = vi.fn().mockImplementation((_p: string, data: string) => {
+      written.push(data);
+      return Promise.resolve();
+    });
+
+    await runLoop({
+      ...dryRunOpts(FIXTURES_STATE_DIR),
+      maxUnits: 2,
+      killSwitchReadFile: makeKillReader('LOOP PAUSED'),
+      telemetry: {
+        enabled: true,
+        appendFile: appendFileMock,
+        mkdirp: vi.fn().mockResolvedValue(undefined),
+      },
+    });
+
+    expect(appendFileMock).toHaveBeenCalledTimes(1);
+    const entry = JSON.parse(written[0]!.trimEnd()) as Record<string, unknown>;
+    expect(entry.stoppedReason).toBe('killed');
+    expect(entry.unitsProcessed).toBe(0);
+  });
+});
