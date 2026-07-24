@@ -20,6 +20,8 @@ import type { BuilderOptions, BuilderResult, CommandRunner } from '../agents/bui
 import type { Reviewer } from './reviewer.js';
 import { runOnce } from './loop.js';
 import { runMonitor } from '../monitor/monitor.js';
+import { appendRunLog } from '../telemetry/run-log.js';
+import type { TelemetryOpts } from '../telemetry/run-log.js';
 
 // Re-export RunOnceResult so callers do not need a separate import.
 export type { RunOnceResult } from './loop.js';
@@ -97,6 +99,16 @@ export interface LoopRunnerOpts {
    * Default: false.
    */
   monitorEnabled?: boolean;
+
+  /**
+   * Telemetry options for recording this run to the JSONL run log.
+   * When `telemetry.enabled` is false (or `telemetry` is omitted), no log
+   * entry is written — safe for dry-run and test modes.
+   *
+   * The entry is written AFTER the loop completes (or on the error path),
+   * capturing the final `stoppedReason`, `unitsProcessed`, and `durationMs`.
+   */
+  telemetry?: TelemetryOpts;
 }
 
 /** Reason the loop stopped. */
@@ -180,6 +192,27 @@ export async function runLoop(opts: LoopRunnerOpts): Promise<LoopRunResult> {
     }
   }
 
+  // ── Shared telemetry writer (called on normal AND error paths) ───────────
+  const writeTelemetry = async (reason: StopReason, units: number): Promise<void> => {
+    if (!opts.telemetry) return;
+    const durationMs = nowFn() - startedAt;
+    try {
+      await appendRunLog(
+        {
+          timestamp: new Date(startedAt).toISOString(),
+          repo,
+          unitsProcessed: units,
+          stoppedReason: reason,
+          durationMs,
+          monitorErrors,
+        },
+        opts.telemetry,
+      );
+    } catch {
+      // Silently swallow — telemetry must never crash the loop.
+    }
+  };
+
   while (unitsProcessed < maxUnits) {
     // ── Budget check: BEFORE starting each new unit ─────────────────────────
     if (nowFn() - startedAt >= budgetMs) {
@@ -202,6 +235,8 @@ export async function runLoop(opts: LoopRunnerOpts): Promise<LoopRunResult> {
     } catch (err) {
       // Unrecoverable error (e.g. state file unreadable, invalid repo)
       stoppedReason = 'error';
+      // Write telemetry BEFORE re-throwing so the error run is logged.
+      await writeTelemetry(stoppedReason, unitsProcessed);
       // Re-throw so callers can observe the error, but only after we've
       // set stoppedReason.  We return the partial results alongside the throw
       // by wrapping in a structured error.
@@ -226,5 +261,10 @@ export async function runLoop(opts: LoopRunnerOpts): Promise<LoopRunResult> {
     }
   }
 
-  return { unitsProcessed, results, stoppedReason, monitorErrors };
+  const loopResult: LoopRunResult = { unitsProcessed, results, stoppedReason, monitorErrors };
+
+  // ── Telemetry: normal path ────────────────────────────────────────────────
+  await writeTelemetry(stoppedReason, unitsProcessed);
+
+  return loopResult;
 }

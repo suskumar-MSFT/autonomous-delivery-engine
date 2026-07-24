@@ -16,7 +16,6 @@ import {
   readRunLog,
   type RunLogEntry,
   type RunLog,
-  type TelemetryOpts,
 } from '../../src/telemetry/run-log.js';
 
 // ── Type-level smoke tests ────────────────────────────────────────────────────
@@ -92,10 +91,17 @@ describe('RunLog type', () => {
   });
 });
 
-// ── appendRunLog (M4-0 scaffold — no-op stub) ─────────────────────────────────
+// ── appendRunLog (M4-1 — full implementation) ─────────────────────────────────
 
-describe('appendRunLog (M4-0 scaffold)', () => {
-  it('returns a Promise that resolves (no-op stub)', async () => {
+describe('appendRunLog (M4-1 implementation)', () => {
+  it('appends a JSONL line to the specified logFile', async () => {
+    const written: Array<[string, string]> = [];
+    const appendFileMock = vi.fn().mockImplementation((p: string, data: string) => {
+      written.push([p, data]);
+      return Promise.resolve();
+    });
+    const mkdirpMock = vi.fn().mockResolvedValue(undefined);
+
     const entry: RunLogEntry = {
       timestamp: '2026-07-23T15:00:00.000Z',
       repo: 'owner/repo',
@@ -104,32 +110,24 @@ describe('appendRunLog (M4-0 scaffold)', () => {
       durationMs: 1_000,
       monitorErrors: [],
     };
-    await expect(appendRunLog(entry)).resolves.toBeUndefined();
-  });
 
-  it('accepts TelemetryOpts without error (stub ignores them)', async () => {
-    const appendFileMock = vi.fn().mockResolvedValue(undefined);
-    const mkdirpMock = vi.fn().mockResolvedValue(undefined);
-    const opts: TelemetryOpts = {
+    await appendRunLog(entry, {
       logFile: 'logs/run-log.jsonl',
       enabled: true,
       appendFile: appendFileMock,
       mkdirp: mkdirpMock,
-    };
-    const entry: RunLogEntry = {
-      timestamp: '2026-07-23T15:00:00.000Z',
-      repo: 'owner/repo',
-      unitsProcessed: 0,
-      stoppedReason: 'empty',
-      durationMs: 0,
-      monitorErrors: [],
-    };
-    await expect(appendRunLog(entry, opts)).resolves.toBeUndefined();
-    // M4-0: stub does not yet call appendFile — that lands in M4-1
-    expect(appendFileMock).not.toHaveBeenCalled();
+    });
+
+    expect(appendFileMock).toHaveBeenCalledTimes(1);
+    const [path, data] = written[0]!;
+    expect(path).toBe('logs/run-log.jsonl');
+    expect(data).toBe(JSON.stringify(entry) + '\n');
   });
 
-  it('resolves even when enabled=false (no-op mode)', async () => {
+  it('creates the parent directory via mkdirp', async () => {
+    const appendFileMock = vi.fn().mockResolvedValue(undefined);
+    const mkdirpMock = vi.fn().mockResolvedValue(undefined);
+
     const entry: RunLogEntry = {
       timestamp: '2026-07-23T15:00:00.000Z',
       repo: 'owner/repo',
@@ -138,7 +136,124 @@ describe('appendRunLog (M4-0 scaffold)', () => {
       durationMs: 0,
       monitorErrors: [],
     };
-    await expect(appendRunLog(entry, { enabled: false })).resolves.toBeUndefined();
+
+    await appendRunLog(entry, {
+      logFile: 'custom/dir/run-log.jsonl',
+      appendFile: appendFileMock,
+      mkdirp: mkdirpMock,
+    });
+
+    expect(mkdirpMock).toHaveBeenCalledTimes(1);
+    expect(mkdirpMock).toHaveBeenCalledWith('custom/dir');
+    expect(appendFileMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('is a no-op when enabled=false', async () => {
+    const appendFileMock = vi.fn().mockResolvedValue(undefined);
+    const mkdirpMock = vi.fn().mockResolvedValue(undefined);
+
+    const entry: RunLogEntry = {
+      timestamp: '2026-07-23T15:00:00.000Z',
+      repo: 'owner/repo',
+      unitsProcessed: 0,
+      stoppedReason: 'empty',
+      durationMs: 0,
+      monitorErrors: [],
+    };
+
+    await appendRunLog(entry, {
+      enabled: false,
+      appendFile: appendFileMock,
+      mkdirp: mkdirpMock,
+    });
+
+    expect(appendFileMock).not.toHaveBeenCalled();
+    expect(mkdirpMock).not.toHaveBeenCalled();
+  });
+
+  it('defaults to logs/run-log.jsonl when logFile is omitted', async () => {
+    const appendFileMock = vi.fn().mockResolvedValue(undefined);
+    const mkdirpMock = vi.fn().mockResolvedValue(undefined);
+
+    const entry: RunLogEntry = {
+      timestamp: '2026-07-23T15:00:00.000Z',
+      repo: 'owner/repo',
+      unitsProcessed: 0,
+      stoppedReason: 'empty',
+      durationMs: 0,
+      monitorErrors: [],
+    };
+
+    await appendRunLog(entry, {
+      appendFile: appendFileMock,
+      mkdirp: mkdirpMock,
+    });
+
+    expect(appendFileMock).toHaveBeenCalledTimes(1);
+    const [path] = (appendFileMock.mock.calls[0] as [string, string]);
+    expect(path).toBe('logs/run-log.jsonl');
+    expect(mkdirpMock).toHaveBeenCalledWith('logs');
+  });
+
+  it('appends multiple entries as separate JSONL lines', async () => {
+    const lines: string[] = [];
+    const appendFileMock = vi.fn().mockImplementation((_p: string, data: string) => {
+      lines.push(data);
+      return Promise.resolve();
+    });
+    const mkdirpMock = vi.fn().mockResolvedValue(undefined);
+
+    const entry1: RunLogEntry = {
+      timestamp: '2026-07-23T14:00:00.000Z',
+      repo: 'owner/repo',
+      unitsProcessed: 2,
+      stoppedReason: 'cap',
+      durationMs: 120_000,
+      monitorErrors: [],
+    };
+    const entry2: RunLogEntry = {
+      timestamp: '2026-07-23T15:00:00.000Z',
+      repo: 'owner/repo',
+      unitsProcessed: 0,
+      stoppedReason: 'empty',
+      durationMs: 500,
+      monitorErrors: [],
+    };
+
+    const sharedOpts = { appendFile: appendFileMock, mkdirp: mkdirpMock };
+    await appendRunLog(entry1, sharedOpts);
+    await appendRunLog(entry2, sharedOpts);
+
+    expect(lines).toHaveLength(2);
+    expect(lines[0]).toBe(JSON.stringify(entry1) + '\n');
+    expect(lines[1]).toBe(JSON.stringify(entry2) + '\n');
+  });
+
+  it('round-trips through readRunLog', async () => {
+    const chunks: string[] = [];
+    const appendFileMock = vi.fn().mockImplementation((_p: string, data: string) => {
+      chunks.push(data);
+      return Promise.resolve();
+    });
+
+    const entry: RunLogEntry = {
+      timestamp: '2026-07-23T15:00:00.000Z',
+      repo: 'owner/repo',
+      unitsProcessed: 1,
+      stoppedReason: 'empty',
+      durationMs: 1_000,
+      monitorErrors: ['some error'],
+    };
+
+    await appendRunLog(entry, {
+      appendFile: appendFileMock,
+      mkdirp: vi.fn().mockResolvedValue(undefined),
+    });
+
+    const raw = chunks.join('');
+    const parsed = readRunLog(raw);
+    expect(parsed).toHaveLength(1);
+    expect(parsed[0]).toEqual(entry);
   });
 });
 
