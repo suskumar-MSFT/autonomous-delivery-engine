@@ -235,10 +235,7 @@ export async function runLoop(opts: LoopRunnerOpts): Promise<LoopRunResult> {
     // Reads PROJECT.md for the `LOOP PAUSED` sentinel.  Fail-open: an
     // unreadable file does NOT stop the loop.
     {
-      const projectFile =
-        opts.killSwitchReadFile !== undefined
-          ? join(stateDir, 'PROJECT.md') // path used when seam is injected
-          : join(stateDir, 'PROJECT.md'); // same path for live
+      const projectFile = join(stateDir, 'PROJECT.md');
       const killed = await checkKillSwitch(projectFile, opts.killSwitchReadFile);
       if (killed) {
         stoppedReason = 'killed';
